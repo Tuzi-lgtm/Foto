@@ -38,8 +38,8 @@ You can delete `cache/` at any time; it rebuilds itself.
 | Key | Action | Key | Action |
 |---|---|---|---|
 | `0`–`5` | Rating | `G` / `E` / `C` | Grid / Loupe / Compare |
-| `P` / `X` / `U` | Pick / Reject / Unflag | `Esc` | Back to grid |
-| `←` / `→` | Previous / next (compare: active side) | `Z`, double-click | Fit ↔ 1:1 |
+| `P` / `X` / `U` | Pick / Reject / Unflag | `Esc`, double-click beside photo | Back to grid |
+| `←` / `→` | Previous / next (compare: active side) | `Z`, double-click on photo | Fit ↔ 1:1 |
 | `Ctrl+[` / `Ctrl+]` | Rotate left / right | scroll, drag | Zoom at cursor, pan |
 | `Ctrl+K` | Add tags | `B` | Add to target collection |
 | `Ctrl+I` | Import folder | `Tab` | Toggle side panels |

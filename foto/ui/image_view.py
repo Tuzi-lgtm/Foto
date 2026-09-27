@@ -87,6 +87,7 @@ class ImageView(QOpenGLWidget):
     viewChanged = Signal(float, float, float)  # scale, cx, cy
     wantsFullRes = Signal()
     clicked = Signal()
+    backgroundDoubleClicked = Signal()  # double-click beside the image, not on it
 
     def __init__(self, color: ColorManager, parent=None):
         super().__init__(parent)
@@ -267,7 +268,18 @@ class ImageView(QOpenGLWidget):
         self._drag_pos = None
 
     def mouseDoubleClickEvent(self, event):
-        self.toggle_zoom()
+        if self._on_image(event.position()):
+            self.toggle_zoom()
+        else:
+            self.backgroundDoubleClicked.emit()
+
+    def _on_image(self, pos: QPointF) -> bool:
+        rect = self._rect()
+        if not rect:
+            return False
+        dpr = self.devicePixelRatioF()
+        x0, y0, w, h = rect
+        return x0 <= pos.x() * dpr <= x0 + w and y0 <= pos.y() * dpr <= y0 + h
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

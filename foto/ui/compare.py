@@ -26,6 +26,7 @@ class ImagePane(QFrame):
     """One ImageView bound to one catalog image, loading thumb → preview → full."""
 
     activated = Signal()
+    backgroundDoubleClicked = Signal()
 
     def __init__(self, service: ImageService, color: ColorManager, parent=None):
         super().__init__(parent)
@@ -35,6 +36,7 @@ class ImagePane(QFrame):
         self.view = ImageView(color, self)
         self.view.wantsFullRes.connect(self._want_full)
         self.view.clicked.connect(self.activated)
+        self.view.backgroundDoubleClicked.connect(self.backgroundDoubleClicked)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         lay.addWidget(self.view)
@@ -94,9 +96,12 @@ class ImagePane(QFrame):
 
 
 class LoupeView(QWidget):
+    backgroundDoubleClicked = Signal()
+
     def __init__(self, service: ImageService, color: ColorManager, parent=None):
         super().__init__(parent)
         self.pane = ImagePane(service, color, self)
+        self.pane.backgroundDoubleClicked.connect(self.backgroundDoubleClicked)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.pane)
@@ -112,6 +117,7 @@ class CompareView(QWidget):
     """Two panes side by side. The active pane receives ratings and flags."""
 
     activeChanged = Signal(object)  # ImageRecord
+    backgroundDoubleClicked = Signal()
 
     def __init__(self, service: ImageService, color: ColorManager, parent=None):
         super().__init__(parent)
@@ -124,6 +130,7 @@ class CompareView(QWidget):
         for i, pane in enumerate(self.panes):
             lay.addWidget(pane)
             pane.activated.connect(lambda i=i: self.set_active(i))
+            pane.backgroundDoubleClicked.connect(self.backgroundDoubleClicked)
             pane.view.viewChanged.connect(lambda s, x, y, i=i: self._sync_from(i, s, x, y))
         self.set_active(0)
 

@@ -77,6 +77,8 @@ class MainWindow(QMainWindow):
         self.loupe = LoupeView(self.service, self.color)
         self.compare = CompareView(self.service, self.color)
         self.compare.activeChanged.connect(lambda _: self._update_inspector())
+        for view in (self.loupe, self.compare):
+            view.backgroundDoubleClicked.connect(partial(self.set_mode, GRID))
 
         self.stack = QStackedWidget()
         for w in (self.grid, self.loupe, self.compare):
