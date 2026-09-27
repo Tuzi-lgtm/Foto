@@ -11,7 +11,7 @@ from PySide6.QtCore import QFile, QItemSelection, QItemSelectionModel, QSettings
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox, QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
-    QProgressBar, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QProgressBar, QPushButton, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from foto import edits
@@ -26,10 +26,12 @@ from foto.imaging.service import ImageService
 from foto.prefs import GB, Prefs
 from foto.ui.backup_dialog import BackupDialog
 from foto.ui.compare import CompareView, LoupeView
+from foto.ui.filmstrip import Filmstrip
 from foto.ui.filterbar import FilterBar
 from foto.ui.grid import GridView, ImageListModel
 from foto.ui.inspector import Inspector
 from foto.ui.preferences import PreferencesDialog
+from foto.ui import secondary as sec
 from foto.ui.sidebar import Sidebar
 from foto.ui.workers import BackupWorker, ImportWorker
 from foto.undo import UndoStack
@@ -82,9 +84,15 @@ class MainWindow(QMainWindow):
         self.grid.selectionModel().currentChanged.connect(self._current_changed)
         self.grid.selectionModel().selectionChanged.connect(lambda *_: self._update_inspector())
 
+        self.filmstrip = Filmstrip()
+        self.filmstrip.setModel(self.model)
+        self.filmstrip.setSelectionModel(self.grid.selectionModel())
+        self.filmstrip.customContextMenuRequested.connect(lambda pos: self._grid_menu(pos, self.filmstrip))
+        self.secondary: sec.SecondaryWindow | None = None
+
         self.loupe = LoupeView(self.service, self.color)
         self.compare = CompareView(self.service, self.color)
-        self.compare.activeChanged.connect(lambda _: self._update_inspector())
+        self.compare.activeChanged.connect(self._compare_active_changed)
         for view in (self.loupe, self.compare):
             view.backgroundDoubleClicked.connect(partial(self.set_mode, GRID))
 
@@ -101,7 +109,15 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(self.filterbar)
-        lay.addWidget(self.stack, 1)
+        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter.addWidget(self.stack)
+        self.splitter.addWidget(self.filmstrip)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([800, 120])
+        self.filmstrip.hide()  # only in loupe / compare
+        lay.addWidget(self.splitter, 1)
         self.setCentralWidget(center)
 
         self.sidebar = Sidebar(self.catalog)
@@ -163,6 +179,14 @@ class MainWindow(QMainWindow):
         self.act_sync = A("Sync Compare Zoom", self._toggle_sync, None, True)
         self.act_sync.setChecked(True)
         self.act_panels = A("Toggle Panels", self._toggle_panels, "Tab")
+        self.act_filmstrip = A("Show Filmstrip", self._update_filmstrip, "F6", True)
+        self.act_filmstrip.setChecked(True)
+        self.act_secondary = A("Show Secondary Window", self.toggle_secondary, "F11", True)
+        self.act_sec_grid = A("Grid", partial(self.show_secondary, sec.GRID), "Shift+G", True)
+        self.act_sec_detail = A("Detail", partial(self.show_secondary, sec.DETAIL), "Shift+E", True)
+        group = QActionGroup(self)
+        group.addAction(self.act_sec_grid)
+        group.addAction(self.act_sec_detail)
         self.act_exp_up = A("Viewer Exposure +½", partial(self._exposure, 0.5), "Ctrl+=")
         self.act_exp_dn = A("Viewer Exposure −½", partial(self._exposure, -0.5), "Ctrl+-")
         self.act_exp_0 = A("Reset Viewer Exposure", partial(self._exposure, None), "Ctrl+0")
@@ -222,7 +246,12 @@ class MainWindow(QMainWindow):
 
         m = mb.addMenu("&View")
         m.addActions([self.act_grid, self.act_loupe, self.act_compare, self.act_zoom])
-        m.addActions([self.act_prev, self.act_next, self.act_swap, self.act_sync, self.act_panels])
+        m.addActions([self.act_prev, self.act_next, self.act_swap, self.act_sync, self.act_panels, self.act_filmstrip])
+        m.addSeparator()
+        second = m.addMenu("Secondary Window")
+        second.addAction(self.act_secondary)
+        second.addSeparator()
+        second.addActions([self.act_sec_grid, self.act_sec_detail])
         m.addSeparator()
         self.color_menu = m.addMenu("Color Management (OCIO)")
         self.color_menu.aboutToShow.connect(self._fill_color_menu)
@@ -303,7 +332,14 @@ class MainWindow(QMainWindow):
             self.compare.show_records(a, b)
         self.stack.setCurrentIndex(mode)
         (self.grid if mode == GRID else self.stack.currentWidget()).setFocus()
+        self._update_filmstrip()
         self._update_inspector()
+
+    def _update_filmstrip(self) -> None:
+        show = self.stack.currentIndex() != GRID and self.act_filmstrip.isChecked()
+        self.filmstrip.setVisible(show)
+        if show:
+            self.filmstrip.center_on(self.grid.currentIndex())
 
     def _compare_pair(self) -> tuple[ImageRecord | None, ImageRecord | None]:
         sel = self.grid.selected_records()
@@ -317,8 +353,24 @@ class MainWindow(QMainWindow):
         return cur, nxt
 
     def _current_changed(self, current, _previous) -> None:
-        if self.stack.currentIndex() == LOUPE:
-            self.loupe.show_record(current.data(Qt.UserRole + 1) if current.isValid() else None)
+        mode = self.stack.currentIndex()
+        rec = current.data(Qt.UserRole + 1) if current.isValid() else None
+        if mode == LOUPE:
+            self.loupe.show_record(rec)
+        elif mode == COMPARE and rec is not None:
+            self.compare.panes[self.compare.active].show_record(rec)  # filmstrip click / arrows: active side
+        if self.filmstrip.isVisible() and current.isValid():
+            if self.filmstrip.hasFocus():
+                self.filmstrip.scrollTo(current)  # don't jump away from where the user clicked
+            else:
+                self.filmstrip.center_on(current)
+        self._update_inspector()
+
+    def _compare_active_changed(self, rec) -> None:
+        """Clicking a compare side makes it current, so the filmstrip shows which photo is active."""
+        row = self.model.row_of(rec.id) if rec is not None else None
+        if self.stack.currentIndex() == COMPARE and row is not None:
+            self.grid.selectionModel().setCurrentIndex(self.model.index(row), QItemSelectionModel.NoUpdate)
         self._update_inspector()
 
     def navigate(self, delta: int) -> None:
@@ -331,8 +383,8 @@ class MainWindow(QMainWindow):
                 return
             row = self.model.row_of(pane.record.id)
             row = 0 if row is None else max(0, min(len(self.model.records) - 1, row + delta))
-            pane.show_record(self.model.records[row])
-            self._update_inspector()
+            # Moving "current" (not the selection) swaps the active side via _current_changed.
+            self.grid.selectionModel().setCurrentIndex(self.model.index(row), QItemSelectionModel.NoUpdate)
             return
         row = self.grid.currentIndex().row()
         row = max(0, min(len(self.model.records) - 1, row + delta))
@@ -575,7 +627,8 @@ class MainWindow(QMainWindow):
 
     # -- context menus ---------------------------------------------------
 
-    def _grid_menu(self, pos) -> None:
+    def _grid_menu(self, pos, view=None) -> None:
+        view = view or self.grid
         recs = self.grid.selected_records()
         if not recs:
             return
@@ -595,7 +648,7 @@ class MainWindow(QMainWindow):
             backup.addAction(t.name, partial(self.start_backup, t.id, [r.id for r in recs]))
         backup.setEnabled(not backup.isEmpty())
         m.addAction("Show in File Manager", lambda: reveal_in_file_manager(recs[0].path))
-        m.exec(self.grid.viewport().mapToGlobal(pos))
+        m.exec(view.viewport().mapToGlobal(pos))
 
     def _sidebar_menu(self, pos) -> None:
         item = self.sidebar.itemAt(pos)
@@ -761,6 +814,38 @@ class MainWindow(QMainWindow):
         if kind == "Import" and not error and result.import_id:
             self.sidebar.select_source("import", result.import_id)  # show what just came in
 
+    # -- secondary window ------------------------------------------------
+
+    def _ensure_secondary(self) -> sec.SecondaryWindow:
+        if self.secondary is None:
+            self.secondary = sec.SecondaryWindow(
+                self.model, self.grid.selectionModel(), self.service, self.color, self.settings, self)
+            # Ratings, flags, arrows and the like work while the secondary window has focus too.
+            self.secondary.addActions([a for a in self.actions() if a is not self.act_back])
+            self.secondary.modeChanged.connect(lambda _: self._sync_secondary_actions())
+            self.secondary.visibilityChanged.connect(lambda _: self._sync_secondary_actions())
+        return self.secondary
+
+    def show_secondary(self, mode: int | None = None) -> None:
+        win = self._ensure_secondary()
+        if mode is not None:
+            win.set_mode(mode)
+        if not win.isVisible():
+            win.show_on_other_screen(self)
+        self._sync_secondary_actions()
+
+    def toggle_secondary(self) -> None:
+        if self.secondary is not None and self.secondary.isVisible():
+            self.secondary.close()
+        else:
+            self.show_secondary()
+
+    def _sync_secondary_actions(self) -> None:
+        win = self.secondary
+        self.act_secondary.setChecked(bool(win and win.isVisible()))
+        mode = win.mode() if win else int(self.settings.value("secondary/mode", sec.DETAIL))
+        (self.act_sec_grid if mode == sec.GRID else self.act_sec_detail).setChecked(True)
+
     # -- window state ----------------------------------------------------
 
     def _restore_state(self) -> None:
@@ -775,6 +860,13 @@ class MainWindow(QMainWindow):
         size = int(self.settings.value("cell_size", 200))
         self.filterbar.size.setValue(size)
         self.grid.set_cell_size(size)
+        split = self.settings.value("filmstrip/splitter")
+        if split:
+            self.splitter.restoreState(split)
+        self.act_filmstrip.setChecked(self.settings.value("filmstrip/visible", True, type=bool))
+        self._sync_secondary_actions()
+        if self.settings.value("secondary/visible", False, type=bool):
+            QTimer.singleShot(0, self.show_secondary)
 
     def closeEvent(self, event) -> None:
         if self.worker and self.worker.isRunning():
@@ -783,6 +875,11 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("window_state", self.saveState())
         self.settings.setValue("cell_size", self.filterbar.size.value())
+        self.settings.setValue("filmstrip/splitter", self.splitter.saveState())
+        self.settings.setValue("filmstrip/visible", self.act_filmstrip.isChecked())
+        if self.secondary is not None:
+            self.secondary.save_state()  # remembers whether it was open
+            self.secondary.hide()  # hide, not close: closing would record it as closed
         self.service.shutdown()
         self.catalog.close()
         super().closeEvent(event)

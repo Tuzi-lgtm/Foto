@@ -17,6 +17,13 @@ def _shutter(s: float | None) -> str:
     return f"1/{round(1 / s)} s" if s < 0.5 else f"{s:g} s"
 
 
+
+def camera_name(make: str | None, model: str | None) -> str:
+    """"Canon EOS R5m2", not "Canon Canon EOS R5m2": many cameras repeat the make in the model."""
+    if make and model and model.lower().startswith(make.split()[0].lower()):
+        return model
+    return " ".join(x for x in (make, model) if x)
+
 class Inspector(QWidget):
     addTags = Signal(list)
     removeTag = Signal(str)
@@ -78,7 +85,7 @@ class Inspector(QWidget):
         values = {
             "File": rec.filename,
             "Captured": (rec.capture_time or "").replace("T", "  "),
-            "Camera": " ".join(x for x in (rec.make, rec.model) if x),
+            "Camera": camera_name(rec.make, rec.model),
             "Lens": rec.lens or "",
             "Exposure": exposure,
             "Size": f"{rec.width} × {rec.height}   {rec.file_size / 1e6:.1f} MB" if rec.width

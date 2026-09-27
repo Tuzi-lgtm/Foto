@@ -47,8 +47,15 @@ You can delete `cache/` at any time; it rebuilds itself.
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo | `Ctrl+C` / `Ctrl+V` | Copy / paste edit settings |
 | `Ctrl+A` / `Ctrl+D` | Select all / none | `Ctrl+Shift+I` | Select inverse |
 | `Delete` | Remove from catalog | `Ctrl+,` | Preferences |
+| `F6` | Show / hide filmstrip | `F11` | Show / hide secondary window |
+| `Shift+G` / `Shift+E` | Secondary window: grid / detail | `Ctrl+Shift+F` | Secondary window full screen |
 
 In compare mode, click a side to make it active. Ratings, flags and arrows then apply to that side.
+
+In loupe and compare, a **filmstrip** runs along the bottom. Drag the divider above it to resize it; the thumbnails scale
+with it. In compare, clicking the filmstrip or pressing the arrows changes the active side. The **secondary window**
+(View › Secondary Window) opens on your other monitor. It shows either a grid or the current photo in detail, and it shares the
+selection with the main window. Rating, flag and arrow keys work in it too.
 
 Undo covers ratings, flags, rotation, revert, pasted settings, tags and collection membership.
 Removing photos from the catalog can't be undone. It only moves files to the Recycle Bin (Trash) if you tick that box.
