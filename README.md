@@ -9,6 +9,8 @@ catalog database; the viewer applies edits at display time.
 
 - **Import** folders recursively (JPEG, TIFF, PNG and raw: Sony ARW, Canon CR3/CR2, Nikon NEF, Fuji RAF, DNG, plus other LibRaw formats). Re-importing skips known files.
 - **Fast thumbnails**: raw files use the camera's embedded JPEG, JPEGs use DCT-scaled decoding. Disk cache (320 px thumbs, 2560 px previews) keyed by path + size + mtime, plus a memory cache. Visible cells load first.
+- **Recently Added and By Date** in the library panel: each import run is its own batch, and every photo is
+  browsable by year › month › day of capture. Both are virtual, so nothing is reorganized on disk.
 - **Ratings, flags, tags, collections**, filters (rating, flag, backup state, text across name/camera/lens/tag) and sorting.
 - **Loupe** and **Compare** in an OpenGL viewer: pan and zoom, true 1:1 (loads full resolution on demand), and synced zoom in compare.
 - **OCIO display pipeline** on the GPU: `$OCIO` or the built-in CG config. Choose display, view and input space; there's also a display-only exposure control.

@@ -97,6 +97,28 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (image_id, target_id)
     );
     """,
+    # 3: import batches ("Recently Added"). Existing images are grouped into
+    # batches wherever imported_at jumps by more than five minutes.
+    """
+    CREATE TABLE imports (
+        id         INTEGER PRIMARY KEY,
+        root       TEXT NOT NULL,
+        started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now'))
+    );
+    ALTER TABLE images ADD COLUMN import_id INTEGER REFERENCES imports(id) ON DELETE SET NULL;
+    CREATE INDEX images_import ON images(import_id);
+
+    CREATE TEMP TABLE _batch AS
+    WITH gaps AS (
+        SELECT id, imported_at,
+               COALESCE((julianday(imported_at) - julianday(LAG(imported_at) OVER w)) * 86400 > 300, 1) AS brk
+        FROM images WINDOW w AS (ORDER BY imported_at, id)
+    )
+    SELECT id, imported_at, SUM(brk) OVER (ORDER BY imported_at, id) AS batch FROM gaps;
+    INSERT INTO imports(id, root, started_at) SELECT batch, '', MIN(imported_at) FROM _batch GROUP BY batch;
+    UPDATE images SET import_id = (SELECT batch FROM _batch WHERE _batch.id = images.id);
+    DROP TABLE _batch;
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

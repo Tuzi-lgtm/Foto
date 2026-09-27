@@ -599,6 +599,8 @@ class MainWindow(QMainWindow):
             if result.errors:
                 QMessageBox.warning(self, "Backup problems", "\n".join(result.errors[:30]))
         self.refresh_all()
+        if kind == "Import" and not error and result.import_id:
+            self.sidebar.select_source("import", result.import_id)  # show what just came in
 
     # -- window state ----------------------------------------------------
 

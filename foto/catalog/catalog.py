@@ -48,8 +48,8 @@ class ImageRecord:
 
 @dataclass
 class LibraryFilter:
-    source: str = "all"  # all | folder | collection | tag
-    source_id: int | None = None
+    source: str = "all"  # all | folder | collection | tag | import | date
+    source_id: int | str | None = None  # date: "YYYY", "YYYY-MM" or "YYYY-MM-DD"
     min_rating: int = 0  # 0 = any
     unrated_only: bool = False
     flag: str = "all"  # all | picked | unflagged | rejected | not_rejected
@@ -66,6 +66,14 @@ class NamedCount:
     count: int
 
 
+@dataclass
+class ImportBatch:
+    id: int
+    root: str
+    started_at: str  # UTC, ISO 8601
+    count: int
+
+
 # Columns selected for ImageRecord, in dataclass order.
 _IMAGE_COLS = (
     "i.id, i.folder_id, i.path, i.filename, i.ext, i.file_size, i.mtime_ns, "
@@ -75,6 +83,7 @@ _IMAGE_COLS = (
     "EXISTS (SELECT 1 FROM backup_records b WHERE b.image_id = i.id) AS backed_up"
 )
 _IMAGE_FROM = "images i LEFT JOIN edits e ON e.image_id = i.id"
+_SHOT_AT = "COALESCE(i.capture_time, i.imported_at)"
 
 _SORTS = {
     "capture_time": ["COALESCE(i.capture_time, i.imported_at)", "i.filename"],
@@ -163,7 +172,7 @@ class Catalog:
         """Insert image rows (dicts keyed by column name). Existing paths are skipped."""
         cols = (
             "folder_id", "path", "filename", "ext", "file_size", "mtime_ns", "capture_time",
-            "make", "model", "lens", "iso", "shutter", "aperture", "focal", "width", "height",
+            "make", "model", "lens", "iso", "shutter", "aperture", "focal", "width", "height", "import_id",
         )
         sql = f"INSERT OR IGNORE INTO images({','.join(cols)}) VALUES ({_placeholders(len(cols))})"
         before = self.conn.total_changes
@@ -195,6 +204,12 @@ class Catalog:
         elif f.source == "tag" and f.source_id is not None:
             where.append("i.id IN (SELECT image_id FROM image_tags WHERE tag_id = ?)")
             args.append(f.source_id)
+        elif f.source == "import" and f.source_id is not None:
+            where.append("i.import_id = ?")
+            args.append(f.source_id)
+        elif f.source == "date" and f.source_id:
+            where.append(f"substr({_SHOT_AT}, 1, ?) = ?")
+            args += [len(f.source_id), f.source_id]
 
         if f.unrated_only:
             where.append("i.rating = 0")
@@ -249,6 +264,28 @@ class Catalog:
                     f"UPDATE images SET {column} = ? WHERE id IN ({_placeholders(len(chunk))})",
                     [value, *chunk],
                 )
+
+    # -- dates and import batches ----------------------------------------
+
+    def day_counts(self) -> list[tuple[str, int]]:
+        """("YYYY-MM-DD", count) for every day with photos, by capture time, oldest first."""
+        rows = self.conn.execute(
+            f"SELECT substr({_SHOT_AT}, 1, 10) AS day, COUNT(*) FROM images i GROUP BY day ORDER BY day"
+        )
+        return [(r[0], r[1]) for r in rows]
+
+    def begin_import(self, root: str) -> int:
+        with self.conn:
+            return self.conn.execute("INSERT INTO imports(root) VALUES (?)", (root,)).lastrowid
+
+    def imports(self, limit: int = 10) -> list[ImportBatch]:
+        """Most recent import batches that still have photos, newest first."""
+        rows = self.conn.execute(
+            "SELECT m.id, m.root, m.started_at, COUNT(i.id) FROM imports m "
+            "JOIN images i ON i.import_id = m.id GROUP BY m.id ORDER BY m.started_at DESC, m.id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [ImportBatch(*r) for r in rows]
 
     # -- tags ------------------------------------------------------------
 

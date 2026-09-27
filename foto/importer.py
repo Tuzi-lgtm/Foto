@@ -25,6 +25,7 @@ class ImportResult:
     added: int = 0
     skipped: int = 0
     failed: int = 0
+    import_id: int | None = None  # batch for "Recently Added"; None if nothing new
 
 
 def scan(root: str) -> Iterator[str]:
@@ -49,6 +50,14 @@ def import_folder(
     result = ImportResult()
     batch: list[dict] = []
 
+    def flush() -> None:
+        if result.import_id is None:
+            result.import_id = catalog.begin_import(root)
+        for row in batch:
+            row["import_id"] = result.import_id
+        result.added += catalog.add_images(batch)
+        batch.clear()
+
     for path in scan(root):
         if cancelled and cancelled():
             break
@@ -69,11 +78,10 @@ def import_folder(
         row["folder_id"] = folder_ids[folder]
         batch.append(row)
         if len(batch) >= BATCH:
-            result.added += catalog.add_images(batch)
-            batch.clear()
+            flush()
 
     if batch:
-        result.added += catalog.add_images(batch)
+        flush()
     if not folder_ids:
         catalog.add_folder(root)
     return result
