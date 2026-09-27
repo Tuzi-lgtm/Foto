@@ -90,3 +90,61 @@ def test_sidebar_date_tree(qapp, catalog, tmp_path):
     assert bar._dates.child(1).isExpanded() and not bar._dates.child(0).child(1).isExpanded()
     assert bar.current_source() == ("date", "2026-06-09")
     assert bar._recent.childCount() == 1
+
+
+def test_events_split_on_gaps_not_midnight(catalog, tmp_path):
+    import_folder(catalog, str(_shoot(tmp_path, "a", [
+        "2026:06:08 23:38:10", "2026:06:09 00:20:34",  # one evening shoot across midnight
+        "2026:06:09 14:00:00", "2026:06:09 15:30:00",  # afternoon, >4 h later
+        "2025:12:31 10:00:00",
+    ])))
+    events = catalog.events(gap_hours=4)
+    assert [(e.start, e.end, e.count) for e in events] == [
+        ("2025-12-31T10:00:00", "2025-12-31T10:00:00", 1),
+        ("2026-06-08T23:38:10", "2026-06-09T00:20:34", 2),
+        ("2026-06-09T14:00:00", "2026-06-09T15:30:00", 2),
+    ]
+    assert len(catalog.events(gap_hours=24)) == 2  # longer gap merges the Jun 8/9 shoots
+    evening = events[1]
+    got = catalog.query(LibraryFilter(source="event", source_id=evening.key))
+    assert sorted(r.capture_time for r in got) == ["2026-06-08T23:38:10", "2026-06-09T00:20:34"]
+
+
+def test_event_names_survive_new_photos(catalog, tmp_path):
+    import_folder(catalog, str(_shoot(tmp_path, "a", ["2026:06:08 23:38:10", "2026:06:09 00:20:34"])))
+    ev = catalog.events()[0]
+    catalog.name_event(ev.start, ev.end, "Hogwarts night")
+    import_folder(catalog, str(_shoot(tmp_path, "b", ["2026:06:08 22:00:00"])))  # earlier photo joins the event
+    (ev,) = catalog.events()
+    assert (ev.start, ev.count, ev.name) == ("2026-06-08T22:00:00", 3, "Hogwarts night")
+    catalog.name_event(ev.start, ev.end, "")
+    assert catalog.events()[0].name is None
+
+
+def test_event_labels():
+    from foto.catalog.catalog import Event
+    from foto.ui.sidebar import event_label, event_tooltip
+
+    same_day = Event("2026-06-09T14:00:00", "2026-06-09T15:30:00", 2)
+    assert event_label(same_day) == "Tuesday, Jun 9"
+    assert event_label(same_day, show_time=True) == "Tuesday, Jun 9 · 2:00 PM"
+    assert event_label(Event("2026-06-08T23:38:10", "2026-06-09T00:20:34", 2)) == "Jun 8 – 9"
+    assert event_label(Event("2026-06-30T20:00:00", "2026-07-02T09:00:00", 9)) == "Jun 30 – Jul 2"
+    assert event_label(Event("2026-06-30T20:00:00", "2026-07-02T09:00:00", 9, "Trip")) == "Trip"
+    assert event_tooltip(same_day) == "Tue Jun 9, 2026, 2:00 PM – 3:30 PM"
+
+
+def test_sidebar_events(qapp, catalog, tmp_path):
+    from foto.ui.sidebar import Sidebar
+
+    import_folder(catalog, str(_shoot(tmp_path, "a", [
+        "2026:06:08 23:38:10", "2026:06:09 00:20:34", "2026:06:09 14:00:00", "2025:12:31 10:00:00"])))
+    bar = Sidebar(catalog)
+    years = [bar._events.child(i) for i in range(bar._events.childCount())]
+    assert [(y.text(0), y.text(1)) for y in years] == [("2026", "3"), ("2025", "1")]
+    assert [years[0].child(i).text(0) for i in range(2)] == ["Tuesday, Jun 9", "Jun 8 – 9"]  # newest first
+    assert bar.section_of(years[0].child(0)) == "events"
+    # The same year under By Date and Events keeps its own expand state.
+    bar._dates.child(0).setExpanded(False)
+    bar.refresh()
+    assert not bar._dates.child(0).isExpanded() and bar._events.child(0).isExpanded()

@@ -9,10 +9,12 @@ that opened it. Background workers open their own Catalog on the same file.
 
 from __future__ import annotations
 
+import bisect
 import json
 import os
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -48,8 +50,8 @@ class ImageRecord:
 
 @dataclass
 class LibraryFilter:
-    source: str = "all"  # all | folder | collection | tag | import | date
-    source_id: int | str | None = None  # date: "YYYY", "YYYY-MM" or "YYYY-MM-DD"
+    source: str = "all"  # all | folder | collection | tag | import | date | event
+    source_id: int | str | None = None  # date: "YYYY[-MM[-DD]]"; event: "start|end" capture times
     min_rating: int = 0  # 0 = any
     unrated_only: bool = False
     flag: str = "all"  # all | picked | unflagged | rejected | not_rejected
@@ -64,6 +66,20 @@ class NamedCount:
     id: int
     name: str
     count: int
+
+
+@dataclass
+class Event:
+    """A run of photos with no capture-time gap longer than the event gap."""
+
+    start: str  # first and last capture time, ISO 8601
+    end: str
+    count: int
+    name: str | None = None  # user-given; None = label it by date
+
+    @property
+    def key(self) -> str:
+        return f"{self.start}|{self.end}"
 
 
 @dataclass
@@ -207,6 +223,10 @@ class Catalog:
         elif f.source == "import" and f.source_id is not None:
             where.append("i.import_id = ?")
             args.append(f.source_id)
+        elif f.source == "event" and f.source_id:
+            start, _, end = f.source_id.partition("|")
+            where.append(f"{_SHOT_AT} BETWEEN ? AND ?")
+            args += [start, end]
         elif f.source == "date" and f.source_id:
             where.append(f"substr({_SHOT_AT}, 1, ?) = ?")
             args += [len(f.source_id), f.source_id]
@@ -326,6 +346,36 @@ class Catalog:
             f"SELECT substr({_SHOT_AT}, 1, 10) AS day, COUNT(*) FROM images i GROUP BY day ORDER BY day"
         )
         return [(r[0], r[1]) for r in rows]
+
+    def events(self, gap_hours: float = 4.0) -> list[Event]:
+        """Photos grouped into events wherever capture times are more than gap_hours apart, oldest first."""
+        times = [r[0] for r in self.conn.execute(f"SELECT {_SHOT_AT} AS t FROM images i ORDER BY t") if r[0]]
+        events: list[Event] = []
+        prev = None
+        for t in times:
+            try:
+                when = datetime.fromisoformat(t[:19])
+            except ValueError:
+                continue
+            if prev is None or (when - prev).total_seconds() > gap_hours * 3600:
+                events.append(Event(t, t, 0))
+            events[-1].end = t
+            events[-1].count += 1
+            prev = when
+        names = self.conn.execute("SELECT anchor, name FROM event_names ORDER BY anchor").fetchall()
+        anchors = [a for a, _ in names]
+        for ev in events:
+            i = bisect.bisect_left(anchors, ev.start)
+            if i < len(anchors) and anchors[i] <= ev.end:
+                ev.name = names[i][1]
+        return events
+
+    def name_event(self, start: str, end: str, name: str) -> None:
+        """Name the event spanning start..end ("" = back to its date label)."""
+        with self.conn:
+            self.conn.execute("DELETE FROM event_names WHERE anchor BETWEEN ? AND ?", (start, end))
+            if name.strip():
+                self.conn.execute("INSERT INTO event_names(anchor, name) VALUES (?, ?)", (start, name.strip()))
 
     def begin_import(self, root: str) -> int:
         with self.conn:

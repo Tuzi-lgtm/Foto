@@ -119,6 +119,14 @@ MIGRATIONS: list[str] = [
     UPDATE images SET import_id = (SELECT batch FROM _batch WHERE _batch.id = images.id);
     DROP TABLE _batch;
     """,
+    # 4: event names. Events themselves are computed from capture-time gaps; a name
+    # is pinned to a moment (anchor) and applies to whichever event contains it.
+    """
+    CREATE TABLE event_names (
+        anchor TEXT PRIMARY KEY,
+        name   TEXT NOT NULL
+    );
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

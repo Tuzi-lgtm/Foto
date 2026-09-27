@@ -10,8 +10,9 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
 
 from foto.catalog import Catalog
+from foto.catalog.catalog import Event
 
-SourceRole = Qt.UserRole + 1  # ("all" | "import" | "date" | "folder" | "collection" | "tag", id)
+SourceRole = Qt.UserRole + 1  # ("all" | "import" | "date" | "event" | "folder" | "collection" | "tag", id)
 
 
 def _short(path: str) -> str:
@@ -36,12 +37,39 @@ def import_label(started_at: str, now: datetime | None = None) -> str:
     return f"{when:%B} {when.day}{year}, {hour}:{when:%M} {'AM' if when.hour < 12 else 'PM'}"
 
 
+def _dt(value: str) -> datetime:
+    return datetime.fromisoformat(value[:19])
+
+
+def _clock(when: datetime) -> str:
+    return f"{when.hour % 12 or 12}:{when:%M} {'AM' if when.hour < 12 else 'PM'}"
+
+
+def event_label(ev: Event, show_time: bool = False) -> str:
+    """User name, else "Sunday, Jun 8" / "Jun 8 – 9" / "Jun 30 – Jul 2"; the year is on the parent node."""
+    if ev.name:
+        return ev.name
+    a, b = _dt(ev.start), _dt(ev.end)
+    if a.date() == b.date():
+        return f"{a:%A}, {a:%b} {a.day}" + (f" · {_clock(a)}" if show_time else "")
+    tail = f"{b.day}" if (a.year, a.month) == (b.year, b.month) else f"{b:%b} {b.day}"
+    return f"{a:%b} {a.day} – {tail}"
+
+
+def event_tooltip(ev: Event) -> str:
+    a, b = _dt(ev.start), _dt(ev.end)
+    span = f"{a:%a} {a:%b} {a.day}, {a.year}, {_clock(a)} – "
+    span += _clock(b) if a.date() == b.date() else f"{b:%a} {b:%b} {b.day}, {b.year}, {_clock(b)}"
+    return f"{ev.name}\n{span}" if ev.name else span
+
+
 class Sidebar(QTreeWidget):
     sourceChanged = Signal(str, object)  # kind, id
 
-    def __init__(self, catalog: Catalog, parent=None):
+    def __init__(self, catalog: Catalog, parent=None, event_gap_hours: float = 4.0):
         super().__init__(parent)
         self.catalog = catalog
+        self.event_gap_hours = event_gap_hours
         self.setHeaderHidden(True)
         self.setColumnCount(2)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -69,6 +97,8 @@ class Sidebar(QTreeWidget):
             it.setToolTip(0, b.root)
         self._dates = self._section("By Date")
         self._build_dates()
+        self._events = self._section("Events")
+        self._build_events()
         self._folders = self._section("Folders")
         for f in self.catalog.folders():
             it = self._item(self._folders, _short(f.name), f.count, ("folder", f.id))
@@ -97,21 +127,38 @@ class Sidebar(QTreeWidget):
                 for d, n in in_month:
                     self._item(m, f"{d:%A}, {d:%b} {d.day}", n, ("date", d.isoformat()))
 
+    def _build_events(self) -> None:
+        """Year (newest first) > events (newest first). Events split wherever capture times are far apart."""
+        events = self.catalog.events(self.event_gap_hours)
+        starts_per_day: dict[str, int] = {}
+        for ev in events:
+            starts_per_day[ev.start[:10]] = starts_per_day.get(ev.start[:10], 0) + 1
+        for year, in_year in groupby(reversed(events), key=lambda ev: ev.start[:4]):
+            in_year = list(in_year)
+            y = self._item(self._events, year, sum(ev.count for ev in in_year), ("date", year))
+            for ev in in_year:
+                it = self._item(y, event_label(ev, starts_per_day[ev.start[:10]] > 1), ev.count, ("event", ev.key))
+                it.setToolTip(0, event_tooltip(ev))
+
     def _restore_expanded(self, first: bool) -> None:
         """Sections start open and date nodes closed (except the newest year); after that, keep what the user did."""
-        newest_year = self._dates.child(0)
+        newest_years = {self._dates.child(0), self._events.child(0)} - {None}
         for it in self._iter_items():
             if not it.childCount():
                 continue
-            default = it.data(0, SourceRole) is None or (first and it is newest_year)
+            default = it.data(0, SourceRole) is None or (first and it in newest_years)
             it.setExpanded(default if first else self._expanded.get(self._key(it), default))
         if first:
             self._expanded = {}
 
     @staticmethod
     def _key(item) -> tuple:
+        """Stable identity for expand state. Includes the section: a year shows under both By Date and Events."""
+        top = item
+        while top.parent() is not None:
+            top = top.parent()
         src = item.data(0, SourceRole)
-        return tuple(src) if src else ("section", item.text(0))
+        return (top.text(0), *src) if src else ("section", item.text(0))
 
     def _section(self, title: str) -> QTreeWidgetItem:
         it = QTreeWidgetItem(self, [title])
@@ -160,7 +207,7 @@ class Sidebar(QTreeWidget):
         while item is not None and item.parent() is not None:
             item = item.parent()
         return {
-            id(self._recent): "recent", id(self._dates): "dates", id(self._folders): "folders",
+            id(self._recent): "recent", id(self._dates): "dates", id(self._events): "events", id(self._folders): "folders",
             id(self._collections): "collections", id(self._tags): "tags",
         }.get(id(item))
 

@@ -120,7 +120,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.splitter, 1)
         self.setCentralWidget(center)
 
-        self.sidebar = Sidebar(self.catalog)
+        self.sidebar = Sidebar(self.catalog, event_gap_hours=self.prefs.event_gap_hours)
         self.sidebar.sourceChanged.connect(self._source_changed)
         self.sidebar.customContextMenuRequested.connect(self._sidebar_menu)
         self.sidebar.target_collection = self.settings.value("target_collection", None, type=int) or None
@@ -551,6 +551,9 @@ class MainWindow(QMainWindow):
             self.service.cache.limit_bytes = self.prefs.cache_limit_gb * GB
             self.service.trim_cache()
             self._apply_performance()
+            if self.sidebar.event_gap_hours != self.prefs.event_gap_hours:
+                self.sidebar.event_gap_hours = self.prefs.event_gap_hours
+                self.sidebar.refresh()
             if self.prefs.ocio_config != old_ocio:
                 self.color.load_config(self.prefs.ocio_config or None)
                 if self.color.error:
@@ -668,6 +671,9 @@ class MainWindow(QMainWindow):
                 m.addAction("Delete", lambda: self._delete_collection(src[1]))
         elif section == "tags" and src:
             m.addAction("Delete Tag", lambda: self._delete_tag(src[1]))
+        elif section == "events" and src and src[0] == "event":
+            m.addAction("Rename Event…", lambda: self._rename_event(src[1], item.text(0)))
+            m.addAction("Reset Name", lambda: self._name_event(src[1], ""))
         if not m.isEmpty():
             m.exec(self.sidebar.viewport().mapToGlobal(pos))
 
@@ -689,6 +695,16 @@ class MainWindow(QMainWindow):
             if self.sidebar.target_collection == cid:
                 self._set_target_collection(None)
             self.refresh_all()
+
+    def _rename_event(self, key: str, current: str) -> None:
+        name, ok = QInputDialog.getText(self, "Rename event", "Name (leave empty to show the date)", text=current)
+        if ok:
+            self._name_event(key, name)
+
+    def _name_event(self, key: str, name: str) -> None:
+        start, _, end = key.partition("|")
+        self.catalog.name_event(start, end, name)
+        self.sidebar.refresh()
 
     def _delete_tag(self, tag_id: int) -> None:
         self.catalog.delete_tag(tag_id)

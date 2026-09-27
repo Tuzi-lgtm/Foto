@@ -11,6 +11,8 @@ catalog database; the viewer applies edits at display time.
 - **Fast thumbnails**: raw files use the camera's embedded JPEG, JPEGs use DCT-scaled decoding. Disk cache (320 px thumbs, 2560 px previews) keyed by path + size + mtime, plus a memory cache. Visible cells load first.
 - **Recently Added and By Date** in the library panel: each import run is its own batch, and every photo is
   browsable by year › month › day of capture. Both are virtual, so nothing is reorganized on disk.
+- **Events** group photos into shoots wherever there's a pause of more than 4 hours (adjustable in Preferences), so an
+  evening that runs past midnight stays together. Right-click an event to name it; the name stays through later imports.
 - **Ratings, flags, tags, collections**, filters (rating, flag, backup state, text across name/camera/lens/tag) and sorting.
 - **Loupe** and **Compare** in an OpenGL viewer: pan and zoom, true 1:1 (loads full resolution on demand), and synced zoom in compare.
 - **OCIO display pipeline** on the GPU: `$OCIO` or the built-in CG config. Choose display, view and input space; there's also a display-only exposure control.

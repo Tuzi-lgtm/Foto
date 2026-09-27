@@ -12,6 +12,7 @@ GB = 1024**3
 CACHE_LIMITS_GB = (1, 2, 5, 10, 20, 50, 100, 0)  # 0 = unlimited
 DEFAULT_CACHE_LIMIT_GB = 20
 DEFAULT_THUMBS_IN_MEMORY = 800
+DEFAULT_EVENT_GAP_HOURS = 4
 
 
 class Prefs:
@@ -59,6 +60,15 @@ class Prefs:
     @default_catalog.setter
     def default_catalog(self, path: str) -> None:
         self.s.setValue("general/default_catalog", path or "")
+
+    @property
+    def event_gap_hours(self) -> int:
+        """A pause in shooting longer than this starts a new event."""
+        return self._int("general/event_gap_hours", DEFAULT_EVENT_GAP_HOURS)
+
+    @event_gap_hours.setter
+    def event_gap_hours(self, hours: int) -> None:
+        self.s.setValue("general/event_gap_hours", int(hours))
 
     # -- performance -----------------------------------------------------
 

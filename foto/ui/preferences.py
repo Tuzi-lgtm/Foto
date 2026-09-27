@@ -174,6 +174,18 @@ class PreferencesDialog(QDialog):
         lay.addWidget(_note(
             "The default catalog opens when Foto starts without --catalog. Changes apply the next time Foto starts."
         ))
+        lay.addSpacing(16)
+        events = QFormLayout()
+        self.event_gap = QSpinBox()
+        self.event_gap.setRange(1, 48)
+        self.event_gap.setSuffix(" hours")
+        self.event_gap.setValue(self.prefs.event_gap_hours)
+        events.addRow("Start a new event after", self.event_gap)
+        lay.addLayout(events)
+        lay.addWidget(_note(
+            "Events group photos into shoots: a pause longer than this starts a new one. Shorter gaps split a day "
+            "into more events; longer gaps keep a whole trip day, or a party that runs past midnight, together."
+        ))
         lay.addStretch(1)
         return w
 
@@ -273,6 +285,7 @@ class PreferencesDialog(QDialog):
         p.cache_limit_gb = self.cache_limit.currentData()
         p.cache_location = self.cache_path.value()
         p.default_catalog = self.default_catalog.value()
+        p.event_gap_hours = self.event_gap.value()
         p.decode_threads = self.threads.value()
         p.thumbs_in_memory = self.thumbs.value()
         p.ocio_config = self.ocio.value()
