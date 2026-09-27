@@ -33,7 +33,13 @@ def parse_args(argv):
     ap = argparse.ArgumentParser(prog="foto", description="Personal photo library")
     ap.add_argument("--catalog", type=Path, help=f"catalog folder (default: {default_catalog_dir()})")
     ap.add_argument("--import", dest="import_folder", help="import this folder on start")
-    return ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    # cmd.exe and older PowerShell pass "~" through literally; expand it ourselves.
+    if args.catalog:
+        args.catalog = args.catalog.expanduser()
+    if args.import_folder:
+        args.import_folder = str(Path(args.import_folder).expanduser())
+    return args
 
 
 def main(argv=None) -> int:
