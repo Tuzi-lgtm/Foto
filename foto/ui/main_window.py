@@ -7,10 +7,10 @@ import subprocess
 import sys
 from functools import partial
 
-from PySide6.QtCore import QItemSelectionModel, QSettings, Qt, QTimer
+from PySide6.QtCore import QFile, QItemSelection, QItemSelectionModel, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
-    QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
+    QCheckBox, QDockWidget, QFileDialog, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox,
     QProgressBar, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -20,15 +20,19 @@ from foto.catalog import Catalog, ImageRecord, LibraryFilter
 from foto.catalog.catalog import FLAG_NONE, FLAG_PICK, FLAG_REJECT
 from foto.color.ocio import ColorManager
 from foto.config import CatalogPaths
+from foto.imaging import decode as dec
 from foto.imaging.cache import DiskCache
 from foto.imaging.service import ImageService
+from foto.prefs import GB, Prefs
 from foto.ui.backup_dialog import BackupDialog
 from foto.ui.compare import CompareView, LoupeView
 from foto.ui.filterbar import FilterBar
 from foto.ui.grid import GridView, ImageListModel
 from foto.ui.inspector import Inspector
+from foto.ui.preferences import PreferencesDialog
 from foto.ui.sidebar import Sidebar
 from foto.ui.workers import BackupWorker, ImportWorker
+from foto.undo import UndoStack
 
 GRID, LOUPE, COMPARE = 0, 1, 2
 
@@ -47,12 +51,16 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.paths = paths
         self.settings = QSettings()
+        self.prefs = Prefs(self.settings)
         self.catalog = Catalog.open(paths.db)
-        self.service = ImageService(DiskCache(paths.cache), self)
-        self.color = ColorManager(parent=self)
+        self.undo = UndoStack(self.catalog)
+        self.service = ImageService(self._make_cache(), self)
+        self.color = ColorManager(self.prefs.ocio_config or None, parent=self)
         self._restore_color()
+        self._apply_performance()
         self.filter = LibraryFilter()
         self.worker = None
+        self._copied_settings: dict | None = None
 
         self.setWindowTitle(f"Foto — {paths.root.name}")
         self._build_widgets()
@@ -161,12 +169,46 @@ class MainWindow(QMainWindow):
         self.act_backup_dlg = A("Backup Targets…", self.backup_dialog)
         self.act_refresh = A("Refresh", self.refresh_all, "F5")
 
+        self.act_undo = A("Undo", self.undo_last, QKeySequence.Undo)
+        self.act_redo = A("Redo", self.redo_last)
+        self.act_redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        self.act_revert = A("Revert Changes", self.revert_edits)
+        self.act_copy = A("Copy Edit Settings", self.copy_settings, QKeySequence.Copy)
+        self.act_paste = A("Paste Edit Settings", self.paste_settings, QKeySequence.Paste)
+        self.act_select_all = A("Select All", self.select_all, QKeySequence.SelectAll)
+        self.act_select_none = A("Select None", self.select_none, "Ctrl+D")
+        self.act_select_inverse = A("Select Inverse", self.select_inverse, "Ctrl+Shift+I")
+        self.act_remove = A("Remove from Catalog…", self.remove_photos, QKeySequence.Delete)
+        self.act_prefs = A("Preferences…", self.preferences, "Ctrl+,")
+        self.act_prefs.setMenuRole(QAction.PreferencesRole)
+
     def _build_menus(self) -> None:
         mb = self.menuBar()
         m = mb.addMenu("&File")
         m.addActions([self.act_import, self.act_refresh])
         m.addSeparator()
         m.addAction(self.act_quit)
+
+        self.edit_menu = m = mb.addMenu("&Edit")
+        m.aboutToShow.connect(self._update_edit_menu)
+        m.addActions([self.act_undo, self.act_redo])
+        m.addSeparator()
+        m.addAction(self.act_revert)
+        m.addSeparator()
+        m.addActions([self.act_copy, self.act_paste])
+        m.addSeparator()
+        m.addActions([self.act_select_all, self.act_select_none, self.act_select_inverse])
+        m.addSeparator()
+        m.addActions([self.act_next, self.act_prev])
+        m.addSeparator()
+        self.edit_collections_menu = m.addMenu("Collections")
+        self.edit_collections_menu.aboutToShow.connect(
+            lambda: self._fill_collections_menu(self.edit_collections_menu))
+        m.addSeparator()
+        m.addAction(self.act_remove)
+        m.addSeparator()
+        m.addAction(self.act_prefs)
+        self._update_edit_menu()
 
         m = mb.addMenu("&Photo")
         m.addActions(self.act_ratings)
@@ -176,7 +218,7 @@ class MainWindow(QMainWindow):
         m.addActions([self.act_rot_l, self.act_rot_r, self.act_tag])
 
         self.collections_menu = mb.addMenu("&Collections")
-        self.collections_menu.aboutToShow.connect(self._fill_collections_menu)
+        self.collections_menu.aboutToShow.connect(lambda: self._fill_collections_menu(self.collections_menu))
 
         m = mb.addMenu("&View")
         m.addActions([self.act_grid, self.act_loupe, self.act_compare, self.act_zoom])
@@ -330,40 +372,157 @@ class MainWindow(QMainWindow):
 
     # -- commands --------------------------------------------------------
 
-    def set_rating(self, rating: int) -> None:
-        ids = self.target_ids()
+    def _command(self, label: str, command, ids=None) -> list[int]:
+        """Run a change to the target photos as one undoable step."""
+        ids = self.target_ids() if ids is None else ids
         if ids:
-            self.catalog.set_rating(ids, rating)
+            self.undo.run(label, ids, lambda: command(ids))
+            self._update_edit_menu()
+        return ids
+
+    def set_rating(self, rating: int) -> None:
+        if ids := self._command("Rating", lambda ids: self.catalog.set_rating(ids, rating)):
             self._reload(ids)
 
     def set_flag(self, flag: int) -> None:
-        ids = self.target_ids()
-        if ids:
-            self.catalog.set_flag(ids, flag)
+        label = {FLAG_PICK: "Pick", FLAG_REJECT: "Reject"}.get(flag, "Unflag")
+        if ids := self._command(label, lambda ids: self.catalog.set_flag(ids, flag)):
             self._reload(ids)
 
     def rotate(self, degrees: int) -> None:
-        ids = self.target_ids()
-        if ids:
-            edits.rotate(self.catalog, ids, degrees)
+        label = "Rotate Right" if degrees > 0 else "Rotate Left"
+        if ids := self._command(label, lambda ids: edits.rotate(self.catalog, ids, degrees)):
             self._reload(ids)
+
+    def revert_edits(self) -> None:
+        def revert(ids):
+            for i in ids:
+                if self.catalog.get_edit(i):
+                    self.catalog.set_edit(i, {}, "Revert")
+
+        if ids := self._command("Revert", revert):
+            self._reload(ids)
+
+    def copy_settings(self) -> None:
+        recs = self.target_records()
+        if recs:
+            self._copied_settings = self.catalog.get_edit(recs[0].id)
+            self.statusBar().showMessage(f"Copied edit settings from {recs[0].filename}", 3000)
+            self._update_edit_menu()
+
+    def paste_settings(self) -> None:
+        if self._copied_settings is None:
+            return
+        settings = self._copied_settings
+
+        def paste(ids):
+            for i in ids:
+                self.catalog.set_edit(i, dict(settings), "Paste settings")
+
+        if ids := self._command("Paste Settings", paste):
+            self._reload(ids)
+
+    def undo_last(self) -> None:
+        self._after_undo(self.undo.undo())
+
+    def redo_last(self) -> None:
+        self._after_undo(self.undo.redo())
+
+    def _after_undo(self, step) -> None:
+        if step is None:
+            return
+        self.sidebar.refresh()  # tag / collection counts
+        if self.filter.source in ("collection", "tag"):
+            self.refresh_grid()
+        self._reload(list(step.before))
+        self._update_edit_menu()
+
+    # -- selection -------------------------------------------------------
+
+    def select_all(self) -> None:
+        self.grid.selectAll()
+
+    def select_none(self) -> None:
+        self.grid.selectionModel().clearSelection()
+
+    def select_inverse(self) -> None:
+        n = self.model.rowCount()
+        if n:
+            everything = QItemSelection(self.model.index(0), self.model.index(n - 1))
+            self.grid.selectionModel().select(everything, QItemSelectionModel.Toggle)
+
+    def _update_edit_menu(self) -> None:
+        undo, redo = self.undo.undo_label(), self.undo.redo_label()
+        self.act_undo.setText(f"Undo {undo}" if undo else "Undo")
+        self.act_undo.setEnabled(undo is not None)
+        self.act_redo.setText(f"Redo {redo}" if redo else "Redo")
+        self.act_redo.setEnabled(redo is not None)
+        self.act_paste.setEnabled(self._copied_settings is not None)
+        n = len(self.target_ids())
+        self.act_remove.setText(f"Remove {n} Photos from Catalog…" if n > 1 else "Remove Photo from Catalog…")
+        self.act_remove.setEnabled(n > 0)
+
+    # -- removing photos -------------------------------------------------
+
+    def remove_photos(self) -> None:
+        recs = self.target_records()
+        if not recs:
+            return
+        what = f"{len(recs)} photos" if len(recs) > 1 else f"“{recs[0].filename}”"
+        box = QMessageBox(QMessageBox.Question, "Remove from catalog",
+                          f"Remove {what} from the catalog?\n\nTheir ratings, tags, collection entries and "
+                          "edits are removed too. This cannot be undone.", QMessageBox.Cancel, self)
+        trash = QCheckBox("Also move the files to the Recycle Bin")
+        box.setCheckBox(trash)
+        remove = box.addButton("Remove", QMessageBox.DestructiveRole)
+        box.setDefaultButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is not remove:
+            return
+        failed = set()
+        if trash.isChecked():
+            failed = {r.path for r in recs if not QFile.moveToTrash(r.path)}
+        self.catalog.remove_images([r.id for r in recs if r.path not in failed])
+        self.refresh_all()
+        if failed:
+            QMessageBox.warning(self, "Not moved to Recycle Bin",
+                                "These files could not be moved and were kept in the catalog:\n"
+                                + "\n".join(sorted(failed)[:20]))
+
+    # -- preferences -----------------------------------------------------
+
+    def preferences(self) -> None:
+        old_cache, old_ocio = self.prefs.cache_dir(self.paths), self.prefs.ocio_config
+        if PreferencesDialog(self.prefs, self.paths, self.service.cache, self).exec():
+            if self.prefs.cache_dir(self.paths) != old_cache:
+                self.service.set_cache(self._make_cache())
+            self.service.cache.limit_bytes = self.prefs.cache_limit_gb * GB
+            self.service.trim_cache()
+            self._apply_performance()
+            if self.prefs.ocio_config != old_ocio:
+                self.color.load_config(self.prefs.ocio_config or None)
+                if self.color.error:
+                    QMessageBox.warning(self, "OCIO config", self.color.error)
+
+    def _make_cache(self) -> DiskCache:
+        return DiskCache(self.prefs.cache_dir(self.paths), limit_bytes=self.prefs.cache_limit_gb * GB)
+
+    def _apply_performance(self) -> None:
+        self.service.set_threads(self.prefs.decode_threads)
+        self.service.memory_limits[dec.THUMB] = self.prefs.thumbs_in_memory
 
     def focus_tags(self) -> None:
         self.docks[1].show()
         self.inspector.tag_edit.setFocus()
 
     def _add_tags(self, names: list[str]) -> None:
-        ids = self.target_ids()
-        if ids:
-            self.catalog.add_tags(ids, names)
+        if self._command("Add Tags", lambda ids: self.catalog.add_tags(ids, names)):
             self.sidebar.refresh()
             self.inspector.set_known_tags([t.name for t in self.catalog.tags()])
             self._update_inspector()
 
     def _remove_tag(self, name: str) -> None:
-        ids = self.target_ids()
-        if ids:
-            self.catalog.remove_tag(ids, name)
+        if self._command("Remove Tag", lambda ids: self.catalog.remove_tag(ids, name)):
             self.sidebar.refresh()
             self._update_inspector()
 
@@ -378,9 +537,7 @@ class MainWindow(QMainWindow):
         return cid
 
     def add_to_collection(self, cid: int, ids=None) -> None:
-        ids = ids if ids is not None else self.target_ids()
-        if ids:
-            self.catalog.add_to_collection(cid, ids)
+        if ids := self._command("Add to Collection", lambda ids: self.catalog.add_to_collection(cid, ids), ids):
             self.sidebar.refresh()
             self.statusBar().showMessage(f"Added {len(ids)} to collection", 3000)
 
@@ -400,12 +557,12 @@ class MainWindow(QMainWindow):
 
     def remove_from_collection(self) -> None:
         if self.filter.source == "collection":
-            self.catalog.remove_from_collection(self.filter.source_id, self.target_ids())
+            cid = self.filter.source_id
+            self._command("Remove from Collection", lambda ids: self.catalog.remove_from_collection(cid, ids))
             self.sidebar.refresh()
             self.refresh_grid()
 
-    def _fill_collections_menu(self) -> None:
-        m = self.collections_menu
+    def _fill_collections_menu(self, m: QMenu) -> None:
         m.clear()
         m.addAction(self.act_new_coll)
         m.addAction(self.act_target)

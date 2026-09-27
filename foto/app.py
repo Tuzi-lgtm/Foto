@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 from foto.config import CatalogPaths, default_catalog_dir
+from foto.prefs import Prefs
 from foto.ui.image_view import set_default_gl_format
 
 
@@ -53,7 +54,8 @@ def main(argv=None) -> int:
 
     from foto.ui.main_window import MainWindow  # after QApplication exists
 
-    paths = CatalogPaths(args.catalog or default_catalog_dir()).ensure()
+    default = Prefs().default_catalog
+    paths = CatalogPaths(args.catalog or (Path(default) if default else default_catalog_dir())).ensure()
     win = MainWindow(paths)
     win.show()
     if args.import_folder:

@@ -257,6 +257,59 @@ class Catalog:
             raise ValueError(f"bad flag {flag}")
         self._update_many("flag", flag, ids)
 
+    def remove_images(self, ids: Sequence[int]) -> None:
+        """Forget images (with their tags, collection entries, edits, backup records). Files are not touched."""
+        with self.conn:
+            for chunk in _chunks(list(ids)):
+                self.conn.execute(f"DELETE FROM images WHERE id IN ({_placeholders(len(chunk))})", chunk)
+
+    # -- undo snapshots --------------------------------------------------
+
+    def snapshot(self, ids: Sequence[int]) -> dict[int, dict]:
+        """Everything a user command can change about these images, for undo/redo."""
+        snap = {}
+        for image_id in ids:
+            row = self.conn.execute("SELECT rating, flag FROM images WHERE id = ?", (image_id,)).fetchone()
+            if row is None:
+                continue
+            snap[image_id] = {
+                "rating": row[0],
+                "flag": row[1],
+                "edit": self.get_edit(image_id),
+                "tags": sorted(r[0] for r in self.conn.execute(
+                    "SELECT t.name FROM image_tags it JOIN tags t ON t.id = it.tag_id WHERE it.image_id = ?",
+                    (image_id,))),
+                "collections": sorted(r[0] for r in self.conn.execute(
+                    "SELECT collection_id FROM collection_images WHERE image_id = ?", (image_id,))),
+            }
+        return snap
+
+    def restore(self, snap: dict[int, dict], label: str) -> None:
+        """Put images back to a snapshot. Images or collections deleted since then are skipped;
+        edit changes go through set_edit, so they are recorded in the edit history too."""
+        for image_id, state in snap.items():
+            now = self.snapshot([image_id]).get(image_id)
+            if now is None:
+                continue
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE images SET rating = ?, flag = ? WHERE id = ?", (state["rating"], state["flag"], image_id)
+                )
+                self.conn.executemany(
+                    "INSERT OR IGNORE INTO collection_images(collection_id, image_id) "
+                    "SELECT id, ? FROM collections WHERE id = ?",
+                    [(image_id, c) for c in state["collections"]],
+                )
+                self.conn.executemany(
+                    "DELETE FROM collection_images WHERE collection_id = ? AND image_id = ?",
+                    [(c, image_id) for c in set(now["collections"]) - set(state["collections"])],
+                )
+            if state["edit"] != now["edit"]:
+                self.set_edit(image_id, state["edit"], label)
+            for name in {t.lower(): t for t in now["tags"]}.keys() - {t.lower() for t in state["tags"]}:
+                self.remove_tag([image_id], name)
+            self.add_tags([image_id], state["tags"])
+
     def _update_many(self, column: str, value, ids: Sequence[int]) -> None:
         with self.conn:
             for chunk in _chunks(list(ids)):

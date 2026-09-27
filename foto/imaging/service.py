@@ -21,6 +21,12 @@ from foto.imaging.cache import DiskCache, cache_key
 MEMORY_LIMITS = {dec.THUMB: 800, dec.PREVIEW: 8, dec.FULL: 2}
 # Loupe requests jump ahead of grid thumbnails.
 _LEVEL_BOOST = {dec.THUMB: 0, dec.PREVIEW: 1_000_000, dec.FULL: 2_000_000}
+# Check the disk cache against its size limit after this many loads.
+TRIM_EVERY = 200
+
+
+def auto_threads() -> int:
+    return max(2, (os.cpu_count() or 4) - 1)
 
 
 class _Signals(QObject):
@@ -55,7 +61,9 @@ class ImageService(QObject):
         super().__init__(parent)
         self.cache = cache
         self.pool = QThreadPool(self)
-        self.pool.setMaxThreadCount(max(2, (os.cpu_count() or 4) - 1))
+        self.pool.setMaxThreadCount(auto_threads())
+        self.memory_limits = dict(MEMORY_LIMITS)
+        self._since_trim = TRIM_EVERY  # trim soon after startup
         self._memory: dict[str, OrderedDict[str, QImage]] = {lvl: OrderedDict() for lvl in dec.LEVELS}
         self._pending: set[tuple[str, str]] = set()
         self._broken: set[tuple[str, str]] = set()
@@ -90,6 +98,22 @@ class ImageService(QObject):
         self._counter += 1
         self.pool.start(_Job(self._signals, self.cache, rec, key, level), self._counter + _LEVEL_BOOST[level])
 
+    def set_threads(self, n: int) -> None:
+        """Decoder threads; 0 = automatic."""
+        self.pool.setMaxThreadCount(n or auto_threads())
+
+    def set_cache(self, cache: DiskCache) -> None:
+        """Switch disk caches (e.g. a new location). Images already in memory stay."""
+        self.cache = cache
+        self._since_trim = TRIM_EVERY
+
+    def trim_cache(self) -> None:
+        """Enforce the disk cache size limit in the background."""
+        self._since_trim = 0
+        cache = self.cache
+        if cache.limit_bytes:
+            self.pool.start(cache.trim, -1)
+
     def shutdown(self) -> None:
         self.pool.clear()
         self.pool.waitForDone(5000)
@@ -98,8 +122,12 @@ class ImageService(QObject):
         self._pending.discard((key, level))
         mem = self._memory[level]
         mem[key] = image
-        while len(mem) > MEMORY_LIMITS[level]:
+        while len(mem) > self.memory_limits[level]:
             mem.popitem(last=False)
+        if level != dec.FULL:
+            self._since_trim += 1
+            if self._since_trim >= TRIM_EVERY:
+                self.trim_cache()
         self.ready.emit(image_id, level, image)
 
     def _on_failed(self, key: str, level: str, image_id: int, message: str) -> None:

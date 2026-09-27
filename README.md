@@ -44,8 +44,17 @@ You can delete `cache/` at any time; it rebuilds itself.
 | `Ctrl+K` | Add tags | `B` | Add to target collection |
 | `Ctrl+I` | Import folder | `Tab` | Toggle side panels |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Viewer exposure | `Ctrl+Shift+S` | Swap compare sides |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo | `Ctrl+C` / `Ctrl+V` | Copy / paste edit settings |
+| `Ctrl+A` / `Ctrl+D` | Select all / none | `Ctrl+Shift+I` | Select inverse |
+| `Delete` | Remove from catalog | `Ctrl+,` | Preferences |
 
 In compare mode, click a side to make it active. Ratings, flags and arrows then apply to that side.
+
+Undo covers ratings, flags, rotation, revert, pasted settings, tags and collection membership.
+Removing photos from the catalog can't be undone. It only moves files to the Recycle Bin (Trash) if you tick that box.
+
+**Preferences** hold per-user settings: cache location and size limit (least recently viewed previews are
+dropped first), the catalog opened when no `--catalog` is given, decoder threads, and the OCIO config.
 
 ## Backup
 

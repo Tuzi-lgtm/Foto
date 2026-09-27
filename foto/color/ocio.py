@@ -57,18 +57,25 @@ class ColorManager(QObject):
 
     def __init__(self, config_path: str | None = None, parent: QObject | None = None):
         super().__init__(parent)
+        self.exposure = 0.0  # stops, applied in scene/input space before the view
+        self.load_config(config_path, emit=False)
+
+    def load_config(self, config_path: str | None = None, emit: bool = True) -> None:
+        """Switch config ("" or None = $OCIO, else built-in). Keeps the current spaces where the new config has them."""
         self.config_path = config_path or os.environ.get("OCIO") or BUILTIN_CONFIG
-        self.error: str | None = None
+        self.error = None
         try:
             self.config = OCIO.Config.CreateFromFile(self.config_path)
         except Exception as exc:
             self.error = f"{self.config_path}: {exc}; using built-in config"
             self.config_path = BUILTIN_CONFIG
             self.config = OCIO.Config.CreateFromFile(BUILTIN_CONFIG)
-        self.input_space = _pick(self.input_spaces(), PREFERRED_INPUTS)
-        self.display = self.config.getDefaultDisplay()
-        self.view = _pick(self.views(self.display), PREFERRED_VIEWS)
-        self.exposure = 0.0  # stops, applied in scene/input space before the view
+        old = getattr(self, "input_space", None), getattr(self, "display", None), getattr(self, "view", None)
+        self.input_space = old[0] if old[0] in self.input_spaces() else _pick(self.input_spaces(), PREFERRED_INPUTS)
+        self.display = old[1] if old[1] in self.displays() else self.config.getDefaultDisplay()
+        self.view = old[2] if old[2] in self.views(self.display) else _pick(self.views(self.display), PREFERRED_VIEWS)
+        if emit:
+            self.changed.emit()
 
     # -- choices ---------------------------------------------------------
 
