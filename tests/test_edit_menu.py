@@ -160,3 +160,13 @@ def test_main_window_edit_menu(qapp, tmp_path, photo_tree, isolated_settings):
         assert first.id in {r.id for r in win.catalog.query()}
     finally:
         win.close()
+
+
+def test_gpu_summary():
+    from foto.ui.gpu import GpuInfo, gpu_info
+
+    info = GpuInfo("NVIDIA Corporation", "NVIDIA RTX A6000/PCIe/SSE2", "4.1.0 NVIDIA 597.06", 49140)
+    assert info.summary() == "NVIDIA RTX A6000 · driver 597.06 · 48.0 GB · OpenGL 4.1"
+    assert not info.software
+    assert GpuInfo("Mesa", "llvmpipe (LLVM 15.0, 256 bits)", "4.5 (Core Profile) Mesa 23.0").software
+    assert isinstance(gpu_info(), (GpuInfo, str))  # never raises, even without a GPU (offscreen tests)

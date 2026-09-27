@@ -17,6 +17,7 @@ from foto.config import CatalogPaths, default_catalog_dir
 from foto.imaging.cache import DiskCache
 from foto.imaging.service import auto_threads
 from foto.prefs import CACHE_LIMITS_GB, GB, Prefs
+from foto.ui.gpu import gpu_info
 
 
 def human(n: float) -> str:
@@ -31,6 +32,12 @@ def _note(text: str) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
     label.setStyleSheet("color: #9a9a9a;")
+    return label
+
+
+def _heading(text: str) -> QLabel:
+    label = QLabel(text.upper())
+    label.setStyleSheet("font-weight: 600; font-size: 11px; letter-spacing: 1px;")
     return label
 
 
@@ -172,6 +179,28 @@ class PreferencesDialog(QDialog):
 
     def _performance_page(self) -> QWidget:
         w, lay = self._page()
+        lay.addWidget(_heading("GPU"))
+        info = gpu_info()
+        if isinstance(info, str):
+            lay.addWidget(QLabel(info))
+        else:
+            gpu = QLabel(info.summary())
+            gpu.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            gpu.setToolTip("\n".join((info.vendor, info.renderer, info.version)))
+            lay.addWidget(gpu)
+            if info.software:
+                lay.addWidget(_note(
+                    "⚠ This is software rendering, so the viewer will be slow. Install or update the graphics "
+                    "driver, or avoid running Foto over Remote Desktop."
+                ))
+            else:
+                lay.addWidget(_note(
+                    "The viewer draws and color-manages photos on this GPU. On a laptop with two GPUs, choose "
+                    "High performance for Python under Windows Settings › System › Display › Graphics."
+                    if os.name == "nt" else "The viewer draws and color-manages photos on this GPU."
+                ))
+        lay.addSpacing(16)
+        lay.addWidget(_heading("Decoding"))
         form = QFormLayout()
         self.threads = QSpinBox()
         self.threads.setRange(0, max(2, os.cpu_count() or 4))
