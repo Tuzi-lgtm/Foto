@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import os
+import struct
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
@@ -96,8 +98,11 @@ def read_metadata(path: str) -> dict:
     """Best-effort EXIF. Missing fields are simply absent."""
     meta: dict = {}
     try:
-        with open(path, "rb") as fh:
-            tags = exifread.process_file(fh, details=False, extract_thumbnail=False)
+        if path.lower().endswith(".cr3"):
+            tags = _cr3_tags(path)
+        else:
+            with open(path, "rb") as fh:
+                tags = exifread.process_file(fh, details=False, extract_thumbnail=False)
     except Exception:  # exifread raises assorted errors on odd files
         tags = {}
 
@@ -163,6 +168,51 @@ def _fill_from_libraw(path: str, meta: dict) -> None:
     meta["aperture"] = meta.get("aperture") or (other.aperture or None)
     meta["focal"] = meta.get("focal") or (other.focal_length or None)
     meta["lens"] = meta.get("lens") or (lens.model or None)
+
+
+_CANON_UUID = bytes.fromhex("85c0b687820f11e08111f4ce462b6a48")
+
+
+def _boxes(buf: bytes, start: int, end: int) -> Iterator[tuple[bytes, int, int]]:
+    """ISO BMFF boxes in buf[start:end] as (type, payload start, box end)."""
+    pos = start
+    while pos + 8 <= end:
+        size, kind = struct.unpack(">I4s", buf[pos : pos + 8])
+        hdr = 8
+        if size == 1:
+            size, hdr = struct.unpack(">Q", buf[pos + 8 : pos + 16])[0], 16
+        elif size == 0:
+            size = end - pos
+        if size < hdr or pos + size > end:
+            return
+        yield kind, pos + hdr, pos + size
+        pos += size
+
+
+def _cr3_tags(path: str) -> dict:
+    """exifread can't parse CR3 (ISO BMFF). Canon stores plain TIFF blocks in moov/uuid:
+    CMT1 is IFD0 (Make, Model, ...) and CMT2 the Exif IFD, so parse those directly."""
+    with open(path, "rb") as fh:
+        while header := fh.read(8):
+            size, kind = struct.unpack(">I4s", header)
+            if kind == b"moov":
+                moov = fh.read(size - 8)
+                break
+            if size < 8:
+                return {}
+            fh.seek(size - 8, os.SEEK_CUR)
+        else:
+            return {}
+    tags: dict = {}
+    for kind, start, end in _boxes(moov, 0, len(moov)):
+        if kind != b"uuid" or moov[start : start + 16] != _CANON_UUID:
+            continue
+        for sub, s, e in _boxes(moov, start + 16, end):
+            if sub in (b"CMT1", b"CMT2"):
+                found = exifread.process_file(io.BytesIO(moov[s:e]), details=False, extract_thumbnail=False)
+                for key, value in found.items():  # each block reads as a lone IFD0 ("Image ...")
+                    tags[key.replace("Image ", "EXIF ", 1) if sub == b"CMT2" else key] = value
+    return tags
 
 
 def _fill_pixel_size(path: str, meta: dict) -> None:

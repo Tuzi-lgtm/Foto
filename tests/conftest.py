@@ -81,3 +81,27 @@ def make_dng(path, width=1800, height=1200, orientation=6, preview=True):
         else:
             tif.write(cfa, photometric=32803, subfiletype=0, extratags=main_tags + raw_tags)
     return path
+
+
+def make_cr3(path, make="Canon", model="Canon EOS R5m2", lens="RF24-70mm F2.8 L IS USM", when="2026:06:08 23:38:10"):
+    """Minimal CR3 container: ftyp + moov/uuid(Canon) holding CMT1 (IFD0) and CMT2 (Exif IFD) TIFFs.
+    No image data, so only metadata can be read from it."""
+    import struct
+
+    from PIL import Image
+
+    def box(kind, payload):
+        return struct.pack(">I4s", 8 + len(payload), kind) + payload
+
+    def tiff(tags):
+        exif = Image.Exif()
+        for tag, value in tags.items():
+            exif[tag] = value
+        return exif.tobytes()[6:]  # drop the JPEG "Exif\0\0" prefix
+
+    cmt1 = tiff({0x010F: make, 0x0110: model, 0x0132: when})
+    cmt2 = tiff({0x9003: when, 0x8827: 3200, 0xA434: lens})
+    canon = bytes.fromhex("85c0b687820f11e08111f4ce462b6a48") + box(b"CMT1", cmt1) + box(b"CMT2", cmt2)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(box(b"ftyp", b"crx \x00\x00\x00\x01crx isom") + box(b"moov", box(b"uuid", canon)) + box(b"mdat", b""))
+    return path

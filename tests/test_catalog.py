@@ -98,3 +98,12 @@ def test_pixel_size_respects_orientation(qapp, catalog, tmp_path):
     import_folder(catalog, str(tmp_path / "in"))
     rec = catalog.query()[0]
     assert (rec.width, rec.height) == (400, 600)
+
+
+def test_cr3_metadata(tmp_path):
+    from conftest import make_cr3
+    from foto.importer import read_metadata
+
+    meta = read_metadata(str(make_cr3(tmp_path / "x.CR3")))
+    assert (meta["make"], meta["model"], meta["lens"]) == ("Canon", "Canon EOS R5m2", "RF24-70mm F2.8 L IS USM")
+    assert (meta["iso"], meta["capture_time"]) == (3200, "2026-06-08T23:38:10")
