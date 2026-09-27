@@ -25,6 +25,7 @@ from foto.imaging.cache import DiskCache
 from foto.imaging.service import ImageService
 from foto.prefs import GB, Prefs
 from foto.ui.backup_dialog import BackupDialog
+from foto.ui.bottombar import BottomBar
 from foto.ui.compare import CompareView, LoupeView
 from foto.ui.filmstrip import Filmstrip
 from foto.ui.filterbar import FilterBar
@@ -68,6 +69,7 @@ class MainWindow(QMainWindow):
         self._build_widgets()
         self._build_actions()
         self._build_menus()
+        self._build_bottombar()
         self._restore_state()
         self.refresh_grid()
         if self.color.error:
@@ -118,6 +120,7 @@ class MainWindow(QMainWindow):
         self.splitter.setSizes([800, 120])
         self.filmstrip.hide()  # only in loupe / compare
         lay.addWidget(self.splitter, 1)
+        self._center_layout = lay
         self.setCentralWidget(center)
 
         self.sidebar = Sidebar(self.catalog, event_gap_hours=self.prefs.event_gap_hours)
@@ -260,6 +263,48 @@ class MainWindow(QMainWindow):
         self.backup_menu = mb.addMenu("&Backup")
         self.backup_menu.aboutToShow.connect(self._fill_backup_menu)
 
+    def _build_bottombar(self) -> None:
+        self.act_rot_l.setIconText("⟲")
+        self.act_rot_r.setIconText("⟳")
+        self.act_copy.setIconText("Copy Settings")
+        self.act_paste.setIconText("Paste Settings")
+        self.bottombar = BottomBar(
+            [(GRID, "Grid", "G"), (LOUPE, "Loupe", "E"), (COMPARE, "Compare", "C")],
+            [self.act_secondary, self.act_sec_grid, self.act_sec_detail],
+            [self.act_rot_l, self.act_rot_r, self.act_copy, self.act_paste],
+        )
+        self.bottombar.modeClicked.connect(self.set_mode)
+        self.bottombar.ratingClicked.connect(self.set_rating)
+        self.bottombar.flagClicked.connect(self.set_flag)
+        self.bottombar.zoomRequested.connect(self.zoom_to)
+        for view in (self.loupe.pane.view, *(p.view for p in self.compare.panes)):
+            view.viewChanged.connect(lambda *_: self._update_zoom())
+        self._center_layout.addWidget(self.bottombar)
+        self._sync_bar()
+
+    def _active_view(self):
+        mode = self.stack.currentIndex()
+        if mode == LOUPE:
+            return self.loupe.pane.view
+        if mode == COMPARE:
+            return self.compare.panes[self.compare.active].view
+        return None
+
+    def zoom_to(self, ratio) -> None:
+        view = self._active_view()
+        if view is not None:
+            view.zoom_to(ratio)
+
+    def _update_zoom(self) -> None:
+        view = self._active_view()
+        if view is not None and hasattr(self, "bottombar"):
+            self.bottombar.show_zoom(view.zoom_percent())
+
+    def _sync_bar(self) -> None:
+        mode = self.stack.currentIndex()
+        self.bottombar.set_mode(mode, mode != GRID)
+        self._update_zoom()
+
     # -- data refresh ----------------------------------------------------
 
     def refresh_all(self) -> None:
@@ -328,12 +373,14 @@ class MainWindow(QMainWindow):
         elif mode == COMPARE:
             a, b = self._compare_pair()
             if a is None:
+                self._sync_bar()  # stay put; undo the toolbar's button change
                 return
             self.compare.show_records(a, b)
         self.stack.setCurrentIndex(mode)
         (self.grid if mode == GRID else self.stack.currentWidget()).setFocus()
         self._update_filmstrip()
         self._update_inspector()
+        self._sync_bar()
 
     def _update_filmstrip(self) -> None:
         show = self.stack.currentIndex() != GRID and self.act_filmstrip.isChecked()
@@ -372,6 +419,7 @@ class MainWindow(QMainWindow):
         if self.stack.currentIndex() == COMPARE and row is not None:
             self.grid.selectionModel().setCurrentIndex(self.model.index(row), QItemSelectionModel.NoUpdate)
         self._update_inspector()
+        self._update_zoom()
 
     def navigate(self, delta: int) -> None:
         if not self.model.records:
@@ -419,6 +467,8 @@ class MainWindow(QMainWindow):
         else:
             rec = self.grid.current_record()
         self.inspector.show_record(rec)
+        if hasattr(self, "bottombar"):
+            self.bottombar.show_record(rec)
         ids = self.target_ids()
         self.inspector.show_tags(self.catalog.tags_for(ids), len(ids))
 

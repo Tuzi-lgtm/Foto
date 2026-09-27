@@ -126,3 +126,41 @@ def test_camera_name():
     assert camera_name("NIKON CORPORATION", "NIKON Z 8") == "NIKON Z 8"
     assert camera_name("SONY", "ILCE-7RM5") == "SONY ILCE-7RM5"
     assert camera_name(None, "X100V") == "X100V"
+
+
+def test_bottom_bar(window):
+    from foto.catalog.catalog import FLAG_NONE, FLAG_PICK
+    from foto.ui.main_window import COMPARE, GRID, LOUPE
+
+    win, bar = window, window.bottombar
+    win.grid.setCurrentIndex(win.model.index(0))
+    rec_id = win.model.records[0].id
+
+    bar.stars[2].click()  # 3 stars
+    assert win.catalog.get(rec_id).rating == 3 and bar.stars[2].property("lit") and not bar.stars[3].property("lit")
+    bar.stars[2].click()  # same star again clears
+    assert win.catalog.get(rec_id).rating == 0
+    bar.pick.click()
+    assert win.catalog.get(rec_id).flag == FLAG_PICK and bar.pick.isChecked()
+    bar.pick.click()
+    assert win.catalog.get(rec_id).flag == FLAG_NONE
+    assert win.act_undo.text() == "Undo Unflag"  # toolbar changes are undoable like the keys
+
+    assert not bar.zoom.isEnabled()
+    bar.mode_buttons.button(LOUPE).click()
+    assert win.stack.currentIndex() == LOUPE and bar.zoom.isEnabled()
+    from PySide6.QtTest import QTest
+
+    for _ in range(100):  # the preview decodes in the background
+        if win.loupe.pane.view.texture_size():
+            break
+        QTest.qWait(50)
+    win.zoom_to(4.0)  # test photos are small, so fit is already above 100%
+    assert bar.zoom.text().startswith("400%")
+    bar.fit.click()
+    assert bar.zoom.text().startswith("Fit")
+
+    win.set_mode(GRID)
+    win.model.set_records([])  # nothing to compare
+    bar.mode_buttons.button(COMPARE).click()
+    assert win.stack.currentIndex() == GRID and bar.mode_buttons.checkedId() == GRID

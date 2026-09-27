@@ -101,7 +101,7 @@ class ImageView(QOpenGLWidget):
         self._native_size: tuple[int, int] | None = None  # full-res pixels, unrotated
         self.scale = 1.0
         self.center = QPointF(0.5, 0.5)
-        self._one_to_one = False  # re-snap to 1:1 when a sharper image arrives
+        self._ratio: float | None = None  # zoom as a pixel ratio (1.0 = 1:1); re-applied when a sharper image arrives
         self._drag_pos = None
         self._prog = 0
         self._vao = 0
@@ -121,8 +121,8 @@ class ImageView(QOpenGLWidget):
             self._native_size = native_size
         if not keep_view:
             self.reset_view(emit=False)
-        elif self._one_to_one:
-            self.scale = max(1.0, self.one_to_one_scale())
+        elif self._ratio:
+            self.scale = max(1.0, self._ratio * self.one_to_one_scale())
             self._clamp()
         self.update()
 
@@ -138,7 +138,7 @@ class ImageView(QOpenGLWidget):
         return (self._image.width(), self._image.height()) if self._image is not None else None
 
     def reset_view(self, emit=True) -> None:
-        self._one_to_one = False
+        self._ratio = None
         self.scale = 1.0
         self.center = QPointF(0.5, 0.5)
         self.update()
@@ -147,7 +147,7 @@ class ImageView(QOpenGLWidget):
 
     def set_view(self, scale: float, cx: float, cy: float) -> None:
         """Apply a view state from elsewhere (compare sync) without re-emitting."""
-        self._one_to_one = False
+        self._ratio = None
         self.scale = scale
         self.center = QPointF(cx, cy)
         self._clamp()
@@ -165,13 +165,25 @@ class ImageView(QOpenGLWidget):
 
     def toggle_zoom(self) -> None:
         if abs(self.scale - 1.0) < 1e-3:
-            self.scale = max(1.0, self.one_to_one_scale())
-            self._one_to_one = True
+            self.zoom_to(1.0)
         else:
+            self.zoom_to(None)
+
+    def zoom_to(self, ratio: float | None) -> None:
+        """None = fit; otherwise screen pixels per image pixel (1.0 = 100%). Never smaller than fit."""
+        if ratio is None:
             self.scale = 1.0
             self.center = QPointF(0.5, 0.5)
-            self._one_to_one = False
+        else:
+            self.scale = max(1.0, ratio * self.one_to_one_scale())
+        self._ratio = ratio
         self._after_view_change()
+
+    def zoom_percent(self) -> float | None:
+        """Current zoom as a percentage of full resolution; None when fitted."""
+        if abs(self.scale - 1.0) < 1e-3:
+            return None
+        return 100.0 * self.scale / self.one_to_one_scale()
 
     # -- geometry --------------------------------------------------------
 
@@ -241,7 +253,7 @@ class ImageView(QOpenGLWidget):
         u, v = (px - x0) / w, (py - y0) / h
         factor = 1.0015 ** event.angleDelta().y()
         self.scale = max(1.0, min(MAX_SCALE, self.scale * factor))
-        self._one_to_one = False
+        self._ratio = None
         fit = self._fit_size()
         w2, h2 = fit[0] * self.scale, fit[1] * self.scale
         vw, vh = self._viewport()

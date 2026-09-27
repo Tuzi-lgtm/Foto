@@ -54,6 +54,9 @@ You can delete `cache/` at any time; it rebuilds itself.
 
 In compare mode, click a side to make it active. Ratings, flags and arrows then apply to that side.
 
+The **toolbar** along the bottom has view modes, the secondary window menu, stars (click the lit star again to clear),
+pick and reject, rotate, copy and paste settings, and zoom (Fit, or 25% to 800% of full resolution). Everything there can be undone.
+
 In loupe and compare, a **filmstrip** runs along the bottom. Drag the divider above it to resize it; the thumbnails scale
 with it. In compare, clicking the filmstrip or pressing the arrows changes the active side. The **secondary window**
 (View › Secondary Window) opens on your other monitor. It shows either a grid or the current photo in detail, and it shares the
