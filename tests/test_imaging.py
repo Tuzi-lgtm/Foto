@@ -92,3 +92,33 @@ def test_raw_decode(qapp):
     assert max(thumb.width(), thumb.height()) == 320
     preview = dec.decode(RAW, dec.PREVIEW)
     assert max(preview.width(), preview.height()) >= 1000
+
+
+def test_raw_thumbnails_are_rendered_not_embedded(qapp, tmp_path):
+    """Raws get Foto's own rendering in the grid; the embedded JPEG only stands in first."""
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    from conftest import make_dng
+    from foto.imaging.service import ImageService
+
+    cat = Catalog.open(tmp_path / "c.db")
+    make_dng(tmp_path / "in" / "x.dng")
+    import_folder(cat, str(tmp_path / "in"))
+    (rec,) = cat.query()
+    settings = {rec.id: {}}
+    svc = ImageService(DiskCache(tmp_path / "cache"), develop_settings=lambda i: settings[i])
+    events = []
+    loop = QEventLoop()
+    svc.ready.connect(lambda i, level, image: events.append(image.size().toTuple()))
+    svc._signals.done.connect(lambda *a: loop.quit())
+    assert svc.get(rec, dec.THUMB) is None
+    QTimer.singleShot(20000, loop.quit)
+    loop.exec()
+    assert len(events) == 2  # embedded stand-in, then the render
+    assert svc.get(rec, dec.PREVIEW) is not None  # raws have no previews: the thumbnail serves
+    key = svc.key_for(rec)
+    settings[rec.id] = {"exposure": 1.0}
+    svc.invalidate(rec.id)
+    assert svc.key_for(rec) != key  # new develop settings -> a new rendered thumbnail
+    svc.shutdown()
+    cat.close()
