@@ -3,9 +3,14 @@
 Follows the DNG SDK's reference render, which is what Camera Raw / Lightroom
 profiles are built for:
 
-    camera RGB --clip at camera white--> x camera->ProPhoto (white balance + profile matrices)
-      -> hue/sat map -> exposure (baseline + user) -> look table -> tone curve (hue preserving)
-      -> ProPhoto -> linear sRGB
+    camera RGB --neutralise sensor-clipped pixels--> x camera->ProPhoto (white balance + profile)
+      -> hue/sat map -> exposure (baseline + user) with a highlight shoulder -> look table
+      -> tone curve (hue preserving) -> ProPhoto -> linear sRGB
+
+Two deliberate departures from the reference, to look like Lightroom rather than the bare
+SDK: colour is only forced to neutral where a channel really reaches sensor saturation (the
+reference clips every channel at the white balance's white, which flattens strongly coloured
+light), and exposure rolls highlights off smoothly instead of clipping them.
 
 This module is the CPU reference (thumbnails, export, tests). The viewer runs
 the same maths as a GLSL shader (develop/shader.py) fed from `RenderParams`.
@@ -21,6 +26,8 @@ from foto.develop import colormath as cm
 from foto.develop.dcp import HueSatTable, Profile
 
 CURVE_SIZE = 4096
+HIGHLIGHT_KNEE = 0.4  # exposure is linear up to here, then rolls off smoothly to white
+SATURATION_START = 0.9  # raw level (of sensor clip) where clipped-highlight handling fades in
 
 
 @dataclass
@@ -93,11 +100,17 @@ class RenderParams:
     look_table: HueSatTable | None
     tone_curve: np.ndarray  # CURVE_SIZE samples on [0, 1]
     output: np.ndarray  # ProPhoto -> linear sRGB
+    knee: float = HIGHLIGHT_KNEE
 
     @property
     def white(self) -> float:
-        """Exposure ramp: linear value that maps to 1.0."""
+        """Exposure: linear value that maps to 1.0 before the highlight shoulder."""
         return 2.0 ** -self.exposure
+
+    @property
+    def max_input(self) -> float:
+        """Largest value a channel can reach after exposure: unclipped colour can exceed the white point."""
+        return (1.0 / self.white) / float(np.min(self.camera_white))
 
 
 def _blend_table(tables: list[HueSatTable], g: float) -> HueSatTable | None:
@@ -218,14 +231,33 @@ def apply_rgb_tone(rgb, lut: np.ndarray):
     return np.where(span > 0, cmn + (cmx - cmn) * (x - mn) / np.where(span > 0, span, 1), cmx)
 
 
+def shoulder(t, knee: float, tmax: float):
+    """Identity below the knee; above it a rational roll-off with slope 1 at the knee, reaching 1.0 at tmax."""
+    if tmax <= 1.0 or knee >= 1.0:
+        return np.minimum(t, 1.0)
+    umax = (tmax - knee) / (1.0 - knee)
+    c = umax / (umax - 1.0)
+    u = np.maximum(t - knee, 0.0) / (1.0 - knee)
+    return np.where(t <= knee, t, knee + (1.0 - knee) * u / (1.0 + u / c))
+
+
+def saturation_weight(raw):
+    """0 below SATURATION_START of sensor clip, rising to 1 at clip (per pixel, from its brightest channel)."""
+    m = raw.max(axis=-1, keepdims=True)
+    return np.clip((m - SATURATION_START) / (1.0 - SATURATION_START), 0.0, 1.0)
+
+
 def render(raw_rgb: np.ndarray, p: RenderParams) -> np.ndarray:
     """Linear camera RGB (float 0..1 or uint16) -> display-referred linear sRGB in [0, 1]."""
     x = raw_rgb.astype(np.float32) / (65535.0 if raw_rgb.dtype == np.uint16 else 1.0)
-    x = np.minimum(x, p.camera_white.astype(np.float32))
-    x = np.clip(x @ p.camera_to_prophoto.T.astype(np.float32), 0.0, 1.0)
+    w = saturation_weight(x)
+    x = x + (np.minimum(x, p.camera_white.astype(np.float32)) - x) * w
+    x = np.maximum(x @ p.camera_to_prophoto.T.astype(np.float32), 0.0)
     if p.hue_sat_map is not None:
         x = apply_hue_sat(x, p.hue_sat_map)
-    x = np.minimum(x / p.white, 1.0)
+    tmax = p.max_input
+    x = shoulder(np.minimum(x / p.white, tmax), p.knee, tmax)
+    x = x + (1.0 - x) * w  # sensor-clipped: clean white
     if p.look_table is not None:
         x = apply_hue_sat(x, p.look_table)
     x = apply_rgb_tone(x, p.tone_curve)

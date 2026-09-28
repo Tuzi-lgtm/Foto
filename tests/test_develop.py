@@ -201,3 +201,24 @@ def test_encoded_look_table_uses_linear_hue_and_saturation():
     t[:, :, 1, 0] = 180.0  # low-saturation entries: flip hue
     x = np.array([[1.0, 1.0, 0.5]])  # linear s = 0.5 -> sat index 2, well past the flipped entries
     np.testing.assert_allclose(pl.apply_hue_sat(x, HueSatTable(6, 5, 3, t, srgb_encoded=True)), x, atol=1e-5)
+
+
+def test_highlight_shoulder():
+    t = np.linspace(0, 3, 301)
+    y = pl.shoulder(t, 0.4, 3.0)
+    assert np.all(np.diff(y) >= 0) and y[-1] == pytest.approx(1.0) and y.max() <= 1.0
+    np.testing.assert_allclose(y[t <= 0.4], t[t <= 0.4])  # untouched below the knee
+    i = np.searchsorted(t, 0.4)
+    assert (y[i + 1] - y[i]) / (t[i + 1] - t[i]) == pytest.approx(1.0, abs=0.02)  # no kink at the knee
+    np.testing.assert_allclose(pl.shoulder(t, 0.4, 0.8), np.minimum(t, 1.0))  # nothing to compress
+
+
+def test_coloured_light_keeps_detail_but_clipped_sensor_goes_white(tmp_path):
+    prof = _neutral_profile(tmp_path, offset=0.0)
+    neutral = np.array([0.8, 1.0, 0.45])  # warm white balance: blue's white point is low
+    p = pl.render_params(prof, neutral)
+    # Blue above its white point (0.45) but below sensor clip: used to clip to the same value.
+    blue = pl.render(np.array([[[0.3, 0.4, 0.5], [0.3, 0.4, 0.55]]], np.float32), p)
+    assert blue[0, 1].sum() > blue[0, 0].sum() + 0.01
+    # A pixel at sensor saturation renders clean white.
+    np.testing.assert_allclose(pl.render(np.array([[[1.0, 1.0, 1.0]]], np.float32), p)[0, 0], [1, 1, 1], atol=1e-4)

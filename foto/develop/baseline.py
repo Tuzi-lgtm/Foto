@@ -14,13 +14,13 @@ from functools import lru_cache
 from foto.develop.dcp import camera_key
 
 # camera_key -> baseline (EV) without HTP, fitted so renders match Lightroom's (Camera Neutral,
-# default settings). They land ~0.15-0.2 EV above the BaselineExposure Adobe writes into DNGs.
+# default settings), with Foto's highlight shoulder. They land 0.05-0.2 EV above Adobe's DNG values.
 BASELINES = {
-    "canoneos5dm3": 0.40,  # DNG: 0.25
+    "canoneos5dm3": 0.30,  # DNG: 0.25
     "canoneosr5m2": 0.55,  # DNG: 1.35 with HTP (= 0.35 + 1.0)
 }
 HTP_EXTRA = 1.0  # Lightroom brightens Highlight Tone Priority files by a stop
-DNG_OFFSET = 0.15  # Lightroom renders ~0.15 EV above a DNG's own BaselineExposure
+DNG_OFFSET = 0.1  # Lightroom renders 0.05-0.2 EV above a DNG's own BaselineExposure
 
 
 def canon_htp(path: str) -> int:

@@ -13,12 +13,15 @@ import numpy as np
 
 from foto.color.ocio import LutTexture
 from foto.develop.dcp import HueSatTable
-from foto.develop.pipeline import RenderParams
+from foto.develop.pipeline import SATURATION_START, RenderParams
 
 DEVELOP_GLSL = """
 uniform vec3 dev_cameraWhite;
 uniform mat3 dev_cameraToProPhoto;
 uniform float dev_exposureScale;      // 1 / white of the exposure ramp
+uniform float dev_knee;               // highlight shoulder start
+uniform float dev_maxInput;           // largest value after exposure (the shoulder reaches 1.0 here)
+uniform float dev_satStart;           // raw level where clipped-highlight handling fades in
 uniform mat3 dev_output;              // ProPhoto -> linear sRGB
 uniform bool dev_encodeSRGB;          // no linear space in the OCIO config: hand it sRGB-encoded values
 uniform sampler3D dev_hsm;            // (sat, hue, val) texels of (hueShift, satScale, valScale)
@@ -108,11 +111,23 @@ vec3 dev_rgbTone(vec3 c) {
     return cmn + (cmx - cmn) * (c - mn) / (mx - mn);
 }
 
+float dev_shoulder(float t) {
+    if (dev_maxInput <= 1.0 || dev_knee >= 1.0) return min(t, 1.0);
+    if (t <= dev_knee) return t;
+    float umax = (dev_maxInput - dev_knee) / (1.0 - dev_knee);
+    float c = umax / (umax - 1.0);
+    float u = (t - dev_knee) / (1.0 - dev_knee);
+    return dev_knee + (1.0 - dev_knee) * u / (1.0 + u / c);
+}
+
 vec3 developMain(vec3 cam) {
-    vec3 x = min(cam, dev_cameraWhite);
-    x = clamp(dev_cameraToProPhoto * x, 0.0, 1.0);
+    float w = clamp((max(cam.r, max(cam.g, cam.b)) - dev_satStart) / (1.0 - dev_satStart), 0.0, 1.0);
+    vec3 x = mix(cam, min(cam, dev_cameraWhite), w);
+    x = max(dev_cameraToProPhoto * x, 0.0);
     if (dev_hsmDivs.x > 0) x = dev_hueSat(x, dev_hsm, dev_hsmDivs, dev_hsmSRGB);
-    x = min(x * dev_exposureScale, 1.0);
+    x = min(x * dev_exposureScale, vec3(dev_maxInput));
+    x = vec3(dev_shoulder(x.r), dev_shoulder(x.g), dev_shoulder(x.b));
+    x = mix(x, vec3(1.0), w);  // sensor-clipped: clean white
     if (dev_lookDivs.x > 0) x = dev_hueSat(x, dev_look, dev_lookDivs, dev_lookSRGB);
     x = dev_rgbTone(x);
     x = clamp(dev_output * x, 0.0, 1.0);
@@ -145,6 +160,9 @@ def develop_uniforms(p: RenderParams, encode_srgb: bool) -> list[tuple[str, str,
         ("dev_cameraWhite", "vec3", tuple(float(v) for v in p.camera_white)),
         ("dev_cameraToProPhoto", "mat3", p.camera_to_prophoto),
         ("dev_exposureScale", "float", 1.0 / p.white),
+        ("dev_knee", "float", p.knee),
+        ("dev_maxInput", "float", p.max_input),
+        ("dev_satStart", "float", SATURATION_START),
         ("dev_output", "mat3", p.output),
         ("dev_encodeSRGB", "bool", encode_srgb),
         ("dev_hsmDivs", "ivec3", divs(p.hue_sat_map)),
