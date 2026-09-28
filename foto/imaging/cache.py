@@ -23,8 +23,9 @@ LEVELS = ("thumb", "preview")
 _TOUCH_AFTER = 24 * 3600  # re-stamp a file's mtime on read at most once a day
 
 
-def cache_key(path: str, file_size: int, mtime_ns: int) -> str:
-    return hashlib.sha1(f"{path}|{file_size}|{mtime_ns}".encode()).hexdigest()
+def cache_key(path: str, file_size: int, mtime_ns: int, look: str = "") -> str:
+    """Identifies one original (and, for rendered raws, the look it was rendered with)."""
+    return hashlib.sha1(f"{path}|{file_size}|{mtime_ns}{'|' + look if look else ''}".encode()).hexdigest()
 
 
 class DiskCache:

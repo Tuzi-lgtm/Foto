@@ -117,6 +117,10 @@ FOTO_SAMPLE_RAW=/path/to/file.ARW pytest tests/test_imaging.py   # check a real 
 
 ## Develop (Phase 2, in progress)
 
+Raw files look the same everywhere. Grid thumbnails, the loupe, compare, the secondary window and Develop all
+use Foto's rendering, not the camera's embedded JPEG. The embedded JPEG only fills in the first time, until a
+thumbnail has been rendered.
+
 Press `D` for **Develop**. Raw files are rendered from their sensor data on the GPU through the same pipeline Adobe's
 camera profiles are made for (DNG reference render). The default profile is **Camera Neutral**, read from the `.dcp`
 profiles that Lightroom / Camera Raw install (`C:\ProgramData\Adobe\CameraRaw\CameraProfiles`, or

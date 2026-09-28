@@ -15,6 +15,12 @@ from foto.develop.dcp import Profile, cached_profile, installed_profiles
 from foto.formats import is_raw
 
 DEFAULT_PROFILE = "Camera Neutral"
+DISPLAY_ONLY = {"rotate"}  # edit settings applied when displaying, not when rendering
+
+
+def develop_settings(edit: dict) -> dict:
+    """The part of a photo's edit settings that changes how its raw renders."""
+    return {k: v for k, v in edit.items() if k not in DISPLAY_ONLY}
 PROFILE_FALLBACKS = ("Adobe Standard",)
 HALF, FULL = "half", "full"
 
@@ -123,3 +129,38 @@ def native_size(raw: pl.LinearRaw, full_size: tuple[int, int] | None) -> tuple[i
 def to_uint16(raw: pl.LinearRaw) -> np.ndarray:
     rgb = raw.rgb
     return rgb if rgb.dtype == np.uint16 else (np.clip(rgb, 0, 1) * 65535).astype(np.uint16)
+
+
+# -- rendered thumbnails (CPU) -------------------------------------------------
+
+RENDER_VERSION = 1  # bump when the pipeline's look changes, so cached renders are rebuilt
+
+
+def render_signature(rec: ImageRecord, settings: dict | None = None) -> str:
+    """Identifies a rendered look: pipeline version + develop settings. Part of the cache key."""
+    import hashlib
+    import json
+
+    blob = json.dumps(settings or {}, sort_keys=True)
+    return f"r{RENDER_VERSION}:{hashlib.sha1(blob.encode()).hexdigest()[:12]}"
+
+
+def _downsample(rgb: np.ndarray, max_edge: int) -> np.ndarray:
+    """Area-average a uint16 linear image so its long edge is about max_edge (float32, 0..1)."""
+    h, w = rgb.shape[:2]
+    f = max(1, int(max(h, w) // max_edge))
+    h2, w2 = h // f * f, w // f * f
+    x = rgb[:h2, :w2].astype(np.float32).reshape(h2 // f, f, w2 // f, f, 3).mean(axis=(1, 3)) / 65535.0
+    return x
+
+
+def render_thumbnail(rec: ImageRecord, max_edge: int, settings: dict | None = None):
+    """Camera Neutral render of a raw at thumbnail size, as a QImage (CPU; runs in worker threads)."""
+    from foto.imaging.decode import array_to_qimage, fit
+
+    raw = pl.decode_linear(rec.path, half_size=True)
+    raw.baseline = baseline_exposure(rec.path, rec.make, rec.model)
+    small = _downsample(to_uint16(raw), max_edge)
+    params = render_params_for(rec, raw, settings)
+    out = pl.srgb_encode(pl.render(small, params))
+    return fit(array_to_qimage((np.clip(out, 0, 1) * 255 + 0.5).astype(np.uint8)), max_edge)

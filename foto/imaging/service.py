@@ -3,6 +3,11 @@
 UI code calls `get()`; a cached image comes back immediately, otherwise a
 background job is queued and `ready` fires when it lands. The newest request
 runs first, so whatever is on screen right now wins over earlier scrolling.
+
+Raw thumbnails are rendered by Foto's develop pipeline (so the grid looks like
+the loupe and Develop). The first time, the camera's embedded JPEG stands in
+until the render is done; it is shown but never cached as the thumbnail.
+Views show raws larger than a thumbnail on the GPU, so raws have no previews.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
 from foto.catalog import ImageRecord
+from foto.formats import is_raw
 from foto.imaging import decode as dec
 from foto.imaging.cache import DiskCache, cache_key
 
@@ -31,15 +37,21 @@ def auto_threads() -> int:
 
 class _Signals(QObject):
     done = Signal(str, str, int, QImage)  # key, level, image_id, image
+    provisional = Signal(str, str, int, QImage)  # a stand-in while the real image is made
     failed = Signal(str, str, int, str)
 
 
 class _Job(QRunnable):
-    def __init__(self, signals: _Signals, cache: DiskCache, rec: ImageRecord, key: str, level: str):
+    def __init__(self, signals: _Signals, cache: DiskCache, rec: ImageRecord, key: str, level: str,
+                 settings: dict | None = None):
         super().__init__()
         self.signals, self.cache, self.rec, self.key, self.level = signals, cache, rec, key, level
+        self.settings = settings
 
     def run(self) -> None:
+        if is_raw(self.rec.path) and self.level == dec.THUMB:
+            self._raw_thumb()
+            return
         try:
             image = None if self.level == dec.FULL else self.cache.load(self.key, self.level)
             if image is None:
@@ -52,14 +64,39 @@ class _Job(QRunnable):
         except Exception as exc:  # decode errors must not kill the pool thread
             self.signals.failed.emit(self.key, self.level, self.rec.id, str(exc))
 
+    def _raw_thumb(self) -> None:
+        from foto.develop.engine import render_thumbnail
+
+        image = self.cache.load(self.key, dec.THUMB)
+        if image is not None:
+            self.signals.done.emit(self.key, dec.THUMB, self.rec.id, image)
+            return
+        stand_in = None
+        try:
+            stand_in = dec.decode(self.rec.path, dec.THUMB)
+            self.signals.provisional.emit(self.key, dec.THUMB, self.rec.id, stand_in)
+        except Exception:
+            pass
+        try:
+            image = render_thumbnail(self.rec, dec.MAX_EDGE[dec.THUMB], self.settings)
+        except Exception as exc:
+            if stand_in is None:
+                self.signals.failed.emit(self.key, dec.THUMB, self.rec.id, str(exc))
+                return
+            image = stand_in  # LibRaw can't develop it, but the camera JPEG is better than nothing
+        self.cache.store(self.key, dec.THUMB, image)
+        self.signals.done.emit(self.key, dec.THUMB, self.rec.id, image)
+
 
 class ImageService(QObject):
     ready = Signal(int, str, QImage)  # image_id, level, image
     failed = Signal(int, str, str)  # image_id, level, message
 
-    def __init__(self, cache: DiskCache, parent: QObject | None = None):
+    def __init__(self, cache: DiskCache, parent: QObject | None = None, develop_settings=None):
         super().__init__(parent)
         self.cache = cache
+        self.develop_settings = develop_settings or (lambda image_id: {})  # image_id -> develop settings
+        self._looks: dict[int, str] = {}  # image_id -> render signature, for raws
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(auto_threads())
         self.memory_limits = dict(MEMORY_LIMITS)
@@ -70,10 +107,27 @@ class ImageService(QObject):
         self._counter = 0
         self._signals = _Signals()
         self._signals.done.connect(self._on_done)
+        self._signals.provisional.connect(self._on_provisional)
         self._signals.failed.connect(self._on_failed)
 
+    def key_for(self, rec: ImageRecord) -> str:
+        if not is_raw(rec.path):
+            return cache_key(rec.path, rec.file_size, rec.mtime_ns)
+        look = self._looks.get(rec.id)
+        if look is None:
+            from foto.develop.engine import render_signature
+
+            look = self._looks[rec.id] = render_signature(rec, self.develop_settings(rec.id))
+        return cache_key(rec.path, rec.file_size, rec.mtime_ns, look)
+
+    def invalidate(self, image_id: int) -> None:
+        """A raw's develop settings changed: its next thumbnail request renders the new look."""
+        self._looks.pop(image_id, None)
+
     def get(self, rec: ImageRecord, level: str, request: bool = True) -> QImage | None:
-        key = cache_key(rec.path, rec.file_size, rec.mtime_ns)
+        if level == dec.PREVIEW and is_raw(rec.path):
+            level = dec.THUMB  # raws have no previews; views render them on the GPU
+        key = self.key_for(rec)
         mem = self._memory[level]
         if key in mem:
             mem.move_to_end(key)
@@ -91,12 +145,13 @@ class ImageService(QObject):
         return None, None
 
     def request(self, rec: ImageRecord, level: str, key: str | None = None) -> None:
-        key = key or cache_key(rec.path, rec.file_size, rec.mtime_ns)
+        key = key or self.key_for(rec)
         if (key, level) in self._pending or (key, level) in self._broken:
             return
         self._pending.add((key, level))
         self._counter += 1
-        self.pool.start(_Job(self._signals, self.cache, rec, key, level), self._counter + _LEVEL_BOOST[level])
+        settings = self.develop_settings(rec.id) if is_raw(rec.path) else None
+        self.pool.start(_Job(self._signals, self.cache, rec, key, level, settings), self._counter + _LEVEL_BOOST[level])
 
     def set_threads(self, n: int) -> None:
         """Decoder threads; 0 = automatic."""
@@ -129,6 +184,13 @@ class ImageService(QObject):
             if self._since_trim >= TRIM_EVERY:
                 self.trim_cache()
         self.ready.emit(image_id, level, image)
+
+    def _on_provisional(self, key: str, level: str, image_id: int, image: QImage) -> None:
+        """Show a stand-in now; the request stays pending until the real image arrives."""
+        mem = self._memory[level]
+        if key not in mem:
+            mem[key] = image
+            self.ready.emit(image_id, level, image)
 
     def _on_failed(self, key: str, level: str, image_id: int, message: str) -> None:
         self._pending.discard((key, level))

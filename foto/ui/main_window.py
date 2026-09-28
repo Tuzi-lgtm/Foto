@@ -20,7 +20,7 @@ from foto.catalog import Catalog, ImageRecord, LibraryFilter
 from foto.catalog.catalog import FLAG_NONE, FLAG_PICK, FLAG_REJECT
 from foto.color.ocio import ColorManager
 from foto.config import CatalogPaths
-from foto.develop.engine import RawLoader
+from foto.develop.engine import RawLoader, develop_settings
 from foto.imaging import decode as dec
 from foto.imaging.cache import DiskCache
 from foto.imaging.service import ImageService
@@ -59,7 +59,7 @@ class MainWindow(QMainWindow):
         self.prefs = Prefs(self.settings)
         self.catalog = Catalog.open(paths.db)
         self.undo = UndoStack(self.catalog)
-        self.service = ImageService(self._make_cache(), self)
+        self.service = ImageService(self._make_cache(), self, develop_settings=self._develop_settings)
         self.color = ColorManager(self.prefs.ocio_config or None, parent=self)
         self._restore_color()
         self._apply_performance()
@@ -94,14 +94,14 @@ class MainWindow(QMainWindow):
         self.filmstrip.customContextMenuRequested.connect(lambda pos: self._grid_menu(pos, self.filmstrip))
         self.secondary: sec.SecondaryWindow | None = None
 
-        self.loupe = LoupeView(self.service, self.color)
-        self.compare = CompareView(self.service, self.color)
+        self.raw_loader = RawLoader(self)
+        self.loupe = LoupeView(self.service, self.raw_loader, self.color, self._develop_settings)
+        self.compare = CompareView(self.service, self.raw_loader, self.color, self._develop_settings)
         self.compare.activeChanged.connect(self._compare_active_changed)
         for view in (self.loupe, self.compare):
             view.backgroundDoubleClicked.connect(partial(self.set_mode, GRID))
 
-        self.raw_loader = RawLoader(self)
-        self.develop = DevelopView(self.service, self.raw_loader, self.color, self.catalog.get_edit)
+        self.develop = DevelopView(self.service, self.raw_loader, self.color, self._develop_settings)
         self.develop.backgroundDoubleClicked.connect(partial(self.set_mode, GRID))
 
         self.stack = QStackedWidget()
@@ -637,6 +637,9 @@ class MainWindow(QMainWindow):
                 if self.color.error:
                     QMessageBox.warning(self, "OCIO config", self.color.error)
 
+    def _develop_settings(self, image_id: int) -> dict:
+        return develop_settings(self.catalog.get_edit(image_id))
+
     def _make_cache(self) -> DiskCache:
         return DiskCache(self.prefs.cache_dir(self.paths), limit_bytes=self.prefs.cache_limit_gb * GB)
 
@@ -913,7 +916,8 @@ class MainWindow(QMainWindow):
     def _ensure_secondary(self) -> sec.SecondaryWindow:
         if self.secondary is None:
             self.secondary = sec.SecondaryWindow(
-                self.model, self.grid.selectionModel(), self.service, self.color, self.settings, self)
+                self.model, self.grid.selectionModel(), self.service, self.raw_loader, self.color,
+                self._develop_settings, self.settings, self)
             # Ratings, flags, arrows and the like work while the secondary window has focus too.
             self.secondary.addActions([a for a in self.actions() if a is not self.act_back])
             self.secondary.modeChanged.connect(lambda _: self._sync_secondary_actions())

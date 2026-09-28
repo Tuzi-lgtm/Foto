@@ -25,8 +25,8 @@ class SecondaryWindow(QWidget):
     modeChanged = Signal(int)
     visibilityChanged = Signal(bool)
 
-    def __init__(self, model: ImageListModel, selection, service: ImageService, color: ColorManager,
-                 settings: QSettings, parent=None):
+    def __init__(self, model: ImageListModel, selection, service: ImageService, loader, color: ColorManager,
+                 settings_for, settings: QSettings, parent=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("Foto — Secondary Window")
         self.settings = settings
@@ -36,7 +36,7 @@ class SecondaryWindow(QWidget):
         self.grid.setModel(model)
         self.grid.setSelectionModel(selection)
         self.grid.activated.connect(lambda _: self.set_mode(DETAIL))
-        self.detail = LoupeView(service, color)
+        self.detail = LoupeView(service, loader, color, settings_for)
         self.detail.backgroundDoubleClicked.connect(lambda: self.set_mode(GRID))
         self.stack = QStackedWidget()
         self.stack.addWidget(self.grid)
