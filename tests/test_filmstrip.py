@@ -164,3 +164,18 @@ def test_bottom_bar(window):
     win.model.set_records([])  # nothing to compare
     bar.mode_buttons.button(COMPARE).click()
     assert win.stack.currentIndex() == GRID and bar.mode_buttons.checkedId() == GRID
+
+
+def test_develop_mode(window):
+    from foto.ui.main_window import DEVELOP
+
+    win = window
+    win.grid.setCurrentIndex(win.model.index(1))
+    win.bottombar.mode_buttons.button(DEVELOP).click()
+    assert win.stack.currentIndex() == DEVELOP and win.filmstrip.isVisible()
+    assert win.develop.record.id == win.model.records[1].id
+    assert "Not a raw file" in win.develop.view.overlay_text  # test photos are JPEGs
+    win.set_rating(2)  # commands act on the photo in Develop
+    assert win.catalog.get(win.model.records[1].id).rating == 2
+    win.filmstrip.setCurrentIndex(win.model.index(0))
+    assert win.develop.record.id == win.model.records[0].id

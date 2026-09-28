@@ -115,6 +115,16 @@ pytest                                 # catalog, importer, cache, OCIO, backup 
 FOTO_SAMPLE_RAW=/path/to/file.ARW pytest tests/test_imaging.py   # check a real camera file
 ```
 
+## Develop (Phase 2, in progress)
+
+Press `D` for **Develop**. Raw files are rendered from their sensor data on the GPU through the same pipeline Adobe's
+camera profiles are made for (DNG reference render). The default profile is **Camera Neutral**, read from the `.dcp`
+profiles that Lightroom / Camera Raw install (`C:\ProgramData\Adobe\CameraRaw\CameraProfiles`, or
+`/Library/Application Support/Adobe/CameraRaw/CameraProfiles` on macOS). If a camera has no Camera Neutral profile,
+Adobe Standard is used, and failing that LibRaw's colour matrix. The view shows the embedded JPEG while the raw decodes,
+uses a half-size decode for fit, and decodes full resolution (~1 s) when you zoom in. `\` switches to the camera's
+own JPEG for comparison.
+
 ## Roadmap
 
 - **Phase 2 — Develop**: linear raw decode into a float GPU texture; exposure, white balance and tone in shaders;

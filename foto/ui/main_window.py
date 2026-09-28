@@ -20,6 +20,7 @@ from foto.catalog import Catalog, ImageRecord, LibraryFilter
 from foto.catalog.catalog import FLAG_NONE, FLAG_PICK, FLAG_REJECT
 from foto.color.ocio import ColorManager
 from foto.config import CatalogPaths
+from foto.develop.engine import RawLoader
 from foto.imaging import decode as dec
 from foto.imaging.cache import DiskCache
 from foto.imaging.service import ImageService
@@ -27,6 +28,7 @@ from foto.prefs import GB, Prefs
 from foto.ui.backup_dialog import BackupDialog
 from foto.ui.bottombar import BottomBar
 from foto.ui.compare import CompareView, LoupeView
+from foto.ui.develop_view import DevelopView
 from foto.ui.filmstrip import Filmstrip
 from foto.ui.filterbar import FilterBar
 from foto.ui.grid import GridView, ImageListModel
@@ -37,7 +39,7 @@ from foto.ui.sidebar import Sidebar
 from foto.ui.workers import BackupWorker, ImportWorker
 from foto.undo import UndoStack
 
-GRID, LOUPE, COMPARE = 0, 1, 2
+GRID, LOUPE, COMPARE, DEVELOP = 0, 1, 2, 3
 
 
 def reveal_in_file_manager(path: str) -> None:
@@ -98,8 +100,12 @@ class MainWindow(QMainWindow):
         for view in (self.loupe, self.compare):
             view.backgroundDoubleClicked.connect(partial(self.set_mode, GRID))
 
+        self.raw_loader = RawLoader(self)
+        self.develop = DevelopView(self.service, self.raw_loader, self.color, self.catalog.get_edit)
+        self.develop.backgroundDoubleClicked.connect(partial(self.set_mode, GRID))
+
         self.stack = QStackedWidget()
-        for w in (self.grid, self.loupe, self.compare):
+        for w in (self.grid, self.loupe, self.compare, self.develop):
             self.stack.addWidget(w)
 
         self.filterbar = FilterBar()
@@ -174,6 +180,8 @@ class MainWindow(QMainWindow):
         self.act_grid = A("Grid", partial(self.set_mode, GRID), "G")
         self.act_loupe = A("Loupe", partial(self.set_mode, LOUPE), "E")
         self.act_compare = A("Compare", partial(self.set_mode, COMPARE), "C")
+        self.act_develop = A("Develop", partial(self.set_mode, DEVELOP), "D")
+        self.act_camera_jpeg = A("Compare with Camera JPEG", self._toggle_camera_jpeg, "\\")
         self.act_back = A("Back to Grid", partial(self.set_mode, GRID), "Esc")
         self.act_zoom = A("Toggle Fit / 1:1", self.toggle_zoom, "Z")
         self.act_prev = A("Previous Photo", partial(self.navigate, -1), "Left")
@@ -248,7 +256,8 @@ class MainWindow(QMainWindow):
         self.collections_menu.aboutToShow.connect(lambda: self._fill_collections_menu(self.collections_menu))
 
         m = mb.addMenu("&View")
-        m.addActions([self.act_grid, self.act_loupe, self.act_compare, self.act_zoom])
+        m.addActions([self.act_grid, self.act_loupe, self.act_compare, self.act_develop, self.act_zoom,
+                      self.act_camera_jpeg])
         m.addActions([self.act_prev, self.act_next, self.act_swap, self.act_sync, self.act_panels, self.act_filmstrip])
         m.addSeparator()
         second = m.addMenu("Secondary Window")
@@ -269,7 +278,7 @@ class MainWindow(QMainWindow):
         self.act_copy.setIconText("Copy Settings")
         self.act_paste.setIconText("Paste Settings")
         self.bottombar = BottomBar(
-            [(GRID, "Grid", "G"), (LOUPE, "Loupe", "E"), (COMPARE, "Compare", "C")],
+            [(GRID, "Grid", "G"), (LOUPE, "Loupe", "E"), (COMPARE, "Compare", "C"), (DEVELOP, "Develop", "D")],
             [self.act_secondary, self.act_sec_grid, self.act_sec_detail],
             [self.act_rot_l, self.act_rot_r, self.act_copy, self.act_paste],
         )
@@ -277,7 +286,7 @@ class MainWindow(QMainWindow):
         self.bottombar.ratingClicked.connect(self.set_rating)
         self.bottombar.flagClicked.connect(self.set_flag)
         self.bottombar.zoomRequested.connect(self.zoom_to)
-        for view in (self.loupe.pane.view, *(p.view for p in self.compare.panes)):
+        for view in (self.loupe.pane.view, *(p.view for p in self.compare.panes), self.develop.view):
             view.viewChanged.connect(lambda *_: self._update_zoom())
         self._center_layout.addWidget(self.bottombar)
         self._sync_bar()
@@ -288,6 +297,8 @@ class MainWindow(QMainWindow):
             return self.loupe.pane.view
         if mode == COMPARE:
             return self.compare.panes[self.compare.active].view
+        if mode == DEVELOP:
+            return self.develop.view
         return None
 
     def zoom_to(self, ratio) -> None:
@@ -345,6 +356,10 @@ class MainWindow(QMainWindow):
         cur = self.loupe.pane.record
         if cur and cur.id in by_id:
             self.loupe.show_record(by_id[cur.id])
+        cur = self.develop.record
+        if cur and cur.id in by_id:
+            self.develop.show_record(by_id[cur.id])
+            self.develop.refresh_settings()
         self.compare.refresh(by_id)
         self._update_inspector()
 
@@ -353,8 +368,8 @@ class MainWindow(QMainWindow):
     def target_records(self) -> list[ImageRecord]:
         """What a command acts on: grid selection, loupe image, or active compare side."""
         mode = self.stack.currentIndex()
-        if mode == LOUPE:
-            rec = self.loupe.pane.record
+        if mode in (LOUPE, DEVELOP):
+            rec = self.loupe.pane.record if mode == LOUPE else self.develop.record
             return [rec] if rec else []
         if mode == COMPARE:
             rec = self.compare.active_record()
@@ -370,6 +385,8 @@ class MainWindow(QMainWindow):
     def set_mode(self, mode: int) -> None:
         if mode == LOUPE:
             self.loupe.show_record(self.grid.current_record())
+        elif mode == DEVELOP:
+            self.develop.show_record(self.grid.current_record())
         elif mode == COMPARE:
             a, b = self._compare_pair()
             if a is None:
@@ -404,6 +421,8 @@ class MainWindow(QMainWindow):
         rec = current.data(Qt.UserRole + 1) if current.isValid() else None
         if mode == LOUPE:
             self.loupe.show_record(rec)
+        elif mode == DEVELOP:
+            self.develop.show_record(rec)
         elif mode == COMPARE and rec is not None:
             self.compare.panes[self.compare.active].show_record(rec)  # filmstrip click / arrows: active side
         if self.filmstrip.isVisible() and current.isValid():
@@ -447,8 +466,15 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.loupe.toggle_zoom)
         elif mode == LOUPE:
             self.loupe.toggle_zoom()
+        elif mode == DEVELOP:
+            self.develop.toggle_zoom()
         else:
             self.compare.toggle_zoom()
+
+    def _toggle_camera_jpeg(self) -> None:
+        if self.stack.currentIndex() != DEVELOP:
+            self.set_mode(DEVELOP)
+        self.develop.toggle_camera()
 
     def _toggle_sync(self, on: bool) -> None:
         self.compare.sync = on
@@ -464,6 +490,8 @@ class MainWindow(QMainWindow):
             rec = self.compare.active_record()
         elif mode == LOUPE:
             rec = self.loupe.pane.record
+        elif mode == DEVELOP:
+            rec = self.develop.record
         else:
             rec = self.grid.current_record()
         self.inspector.show_record(rec)
@@ -947,5 +975,6 @@ class MainWindow(QMainWindow):
             self.secondary.save_state()  # remembers whether it was open
             self.secondary.hide()  # hide, not close: closing would record it as closed
         self.service.shutdown()
+        self.raw_loader.shutdown()
         self.catalog.close()
         super().closeEvent(event)

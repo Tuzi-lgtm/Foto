@@ -19,6 +19,8 @@ BUILTIN_CONFIG = "ocio://default"
 # an un-tone-mapped view out: pixels look exactly as the camera rendered them.
 PREFERRED_INPUTS = ("sRGB Encoded Rec.709 (sRGB)", "sRGB - Texture", "srgb_tx", "sRGB")
 PREFERRED_VIEWS = ("Un-tone-mapped", "Standard", "Raw")
+# Developed raws come out as display-referred linear Rec.709 / sRGB primaries.
+LINEAR_SRGB_NAMES = ("Linear Rec.709 (sRGB)", "lin_rec709_srgb", "lin_srgb", "Utility - Linear - sRGB", "linear")
 
 
 @dataclass
@@ -88,6 +90,14 @@ class ColorManager(QObject):
     def views(self, display: str | None = None) -> list[str]:
         return list(self.config.getViews(display or self.display))
 
+    def linear_srgb_space(self) -> str | None:
+        """This config's linear sRGB colour space, if it has one (aliases count)."""
+        for name in LINEAR_SRGB_NAMES:
+            cs = self.config.getColorSpace(name)
+            if cs is not None:
+                return cs.getName()
+        return None
+
     def set_input(self, name: str) -> None:
         self.input_space = name
         self.changed.emit()
@@ -108,14 +118,15 @@ class ColorManager(QObject):
 
     # -- processing ------------------------------------------------------
 
-    def processor(self):
-        dvt = OCIO.DisplayViewTransform(src=self.input_space, display=self.display, view=self.view)
+    def processor(self, input_space: str | None = None):
+        src = input_space or self.input_space
+        dvt = OCIO.DisplayViewTransform(src=src, display=self.display, view=self.view)
         group = OCIO.GroupTransform()
         if self.exposure:
             # Exposure in linear light: decode input to the scene reference, scale, then view.
             ref = OCIO.ROLE_SCENE_LINEAR
             gain = 2.0 ** self.exposure
-            group.appendTransform(OCIO.ColorSpaceTransform(src=self.input_space, dst=ref))
+            group.appendTransform(OCIO.ColorSpaceTransform(src=src, dst=ref))
             group.appendTransform(OCIO.MatrixTransform.Scale([gain, gain, gain, 1.0]))
             dvt.setSrc(ref)
         group.appendTransform(dvt)
@@ -127,9 +138,9 @@ class ColorManager(QObject):
         self.processor().getDefaultCPUProcessor().applyRGB(out)
         return out
 
-    def shader(self) -> ShaderBundle:
+    def shader(self, input_space: str | None = None) -> ShaderBundle:
         try:
-            return build_shader(self.processor())
+            return build_shader(self.processor(input_space))
         except Exception as exc:
             self.error = str(exc)
             return PASSTHROUGH

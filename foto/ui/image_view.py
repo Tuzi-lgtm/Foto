@@ -15,6 +15,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QSurfaceFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from foto.color.ocio import ColorManager, ShaderBundle
+from foto.develop.shader import DEVELOP_GLSL, develop_textures, develop_uniforms
 
 GL_VERSION = (4, 1)
 MAX_SCALE = 64.0
@@ -36,6 +37,16 @@ void main() {
 """
 
 _FRAG_HEAD = "#version 410 core\n"
+# Raw mode: the texture holds linear camera RGB; develop it, then display-transform it.
+_FRAG_MAIN_RAW = """
+uniform sampler2D u_image;
+in vec2 v_uv;
+out vec4 fragColor;
+void main() {
+    vec3 c = developMain(texture(u_image, v_uv).rgb);
+    fragColor = vec4(OCIOMain(vec4(c, 1.0)).rgb, 1.0);
+}
+"""
 _FRAG_MAIN = """
 uniform sampler2D u_image;
 in vec2 v_uv;
@@ -97,6 +108,10 @@ class ImageView(QOpenGLWidget):
         self.setMouseTracking(False)
         self._image: QImage | None = None
         self._image_dirty = False
+        self._raw: np.ndarray | None = None  # uint16 (H, W, 3) linear camera RGB, when showing a raw
+        self._develop = None  # RenderParams for the raw
+        self._dev_tables = None  # identity of the tables currently uploaded
+        self._encode_srgb = False
         self._rotate = 0
         self._native_size: tuple[int, int] | None = None  # full-res pixels, unrotated
         self.scale = 1.0
@@ -114,9 +129,34 @@ class ImageView(QOpenGLWidget):
 
     # -- public API ------------------------------------------------------
 
+    def set_raw(self, rgb: np.ndarray, params, native_size: tuple[int, int] | None = None, keep_view=True):
+        """Show linear camera RGB (uint16) developed on the GPU with these RenderParams."""
+        was_raw = self._raw is not None
+        self._raw = np.ascontiguousarray(rgb)
+        self._image = None
+        self.set_develop(params)
+        if not was_raw:
+            self._shader_dirty = True
+        self._image_dirty = True
+        self._apply_new_content(native_size, keep_view)
+
+    def set_develop(self, params) -> None:
+        """New render settings for the raw on screen (cheap: uniforms, plus tables if the profile changed)."""
+        self._develop = params
+        tables = (id(params.hue_sat_map), id(params.look_table), id(params.tone_curve))
+        if tables != self._dev_tables:
+            self._shader_dirty = True
+        self.update()
+
     def set_image(self, image: QImage | None, native_size: tuple[int, int] | None = None, keep_view=True):
+        if self._raw is not None:
+            self._raw = self._develop = self._dev_tables = None
+            self._shader_dirty = True
         self._image = image
         self._image_dirty = True
+        self._apply_new_content(native_size, keep_view)
+
+    def _apply_new_content(self, native_size, keep_view) -> None:
         if native_size:
             self._native_size = native_size
         if not keep_view:
@@ -135,7 +175,12 @@ class ImageView(QOpenGLWidget):
         self.update()
 
     def texture_size(self) -> tuple[int, int] | None:
+        if self._raw is not None:
+            return self._raw.shape[1], self._raw.shape[0]
         return (self._image.width(), self._image.height()) if self._image is not None else None
+
+    def _has_content(self) -> bool:
+        return self._image is not None or self._raw is not None
 
     def reset_view(self, emit=True) -> None:
         self._ratio = None
@@ -238,7 +283,7 @@ class ImageView(QOpenGLWidget):
 
     def _check_resolution(self) -> None:
         """Any zoom past fit asks for the full-resolution image."""
-        if self.scale > 1.01 and self._image is not None:
+        if self.scale > 1.01 and self._has_content():
             self.wantsFullRes.emit()
 
     # -- input -----------------------------------------------------------
@@ -326,20 +371,28 @@ class ImageView(QOpenGLWidget):
         self._lut_ids = []
 
     def _build_program(self):
-        bundle = self.color.shader()
+        raw = self._raw is not None and self._develop is not None
+        linear = self.color.linear_srgb_space() if raw else None
+        bundle = self.color.shader(linear)
+        tail = DEVELOP_GLSL + _FRAG_MAIN_RAW if raw else _FRAG_MAIN
+        textures = list(bundle.textures) + (develop_textures(self._develop) if raw else [])
         try:
-            prog = _link(_VERT, _FRAG_HEAD + bundle.source + _FRAG_MAIN)
+            prog = _link(_VERT, _FRAG_HEAD + bundle.source + tail)
             self.error_text = ""
         except RuntimeError as exc:
-            self.error_text = f"OCIO shader failed, showing raw pixels: {exc}"[:300]
+            self.error_text = f"Shader failed, showing unmanaged pixels: {exc}"[:300]
             bundle = ShaderBundle("vec4 OCIOMain(vec4 inPixel) { return inPixel; }\n")
-            prog = _link(_VERT, _FRAG_HEAD + bundle.source + _FRAG_MAIN)
+            textures = develop_textures(self._develop) if raw else []
+            prog = _link(_VERT, _FRAG_HEAD + bundle.source + tail)
+        self._encode_srgb = raw and linear is None
+        self._dev_tables = (id(self._develop.hue_sat_map), id(self._develop.look_table),
+                            id(self._develop.tone_curve)) if raw else None
         if self._prog:
             GL.glDeleteProgram(self._prog)
         self._prog = prog
         self._free_luts()
         GL.glUseProgram(prog)
-        for i, lut in enumerate(bundle.textures, start=1):
+        for i, lut in enumerate(textures, start=1):
             self._lut_ids.append((self._upload_lut(i, lut), self._lut_target(lut), lut.sampler))
             GL.glUniform1i(GL.glGetUniformLocation(prog, lut.sampler), i)
         for name, kind, value in bundle.uniforms:
@@ -384,6 +437,9 @@ class ImageView(QOpenGLWidget):
 
     def _upload_image(self):
         self._image_dirty = False
+        if self._raw is not None:
+            self._upload_raw()
+            return
         if self._image is None:
             return
         img = self._image.convertToFormat(QImage.Format_RGBA8888)
@@ -401,6 +457,33 @@ class ImageView(QOpenGLWidget):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
 
+    def _upload_raw(self):
+        h, w, _ = self._raw.shape
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._tex)
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 2)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGB16, w, h, 0, GL.GL_RGB, GL.GL_UNSIGNED_SHORT, self._raw)
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 4)
+        GL.glGenerateMipmap(GL.GL_TEXTURE_2D)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR_MIPMAP_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+
+    def _set_develop_uniforms(self) -> None:
+        for name, kind, value in develop_uniforms(self._develop, self._encode_srgb):
+            loc = GL.glGetUniformLocation(self._prog, name)
+            if kind == "float":
+                GL.glUniform1f(loc, float(value))
+            elif kind in ("bool", "int"):
+                GL.glUniform1i(loc, int(value))
+            elif kind == "vec3":
+                GL.glUniform3f(loc, *value)
+            elif kind == "ivec3":
+                GL.glUniform3i(loc, *(int(v) for v in value))
+            elif kind == "mat3":
+                GL.glUniformMatrix3fv(loc, 1, GL.GL_TRUE, np.ascontiguousarray(value, np.float32))
+
     def paintGL(self):
         c = self.background
         GL.glClearColor(c.redF(), c.greenF(), c.blueF(), 1.0)
@@ -412,13 +495,15 @@ class ImageView(QOpenGLWidget):
             self._clamp()
 
         rect = self._rect()
-        if self._image is not None and rect:
+        if self._has_content() and rect:
             vw, vh = self._viewport()
             x0, y0, w, h = rect
             ndc = (x0 / vw * 2 - 1, 1 - y0 / vh * 2, (x0 + w) / vw * 2 - 1, 1 - (y0 + h) / vh * 2)
             GL.glUseProgram(self._prog)
             GL.glUniform4f(GL.glGetUniformLocation(self._prog, "u_rect"), *ndc)
             GL.glUniform1i(GL.glGetUniformLocation(self._prog, "u_rot"), self._rotate)
+            if self._raw is not None and self._develop is not None:
+                self._set_develop_uniforms()
             GL.glActiveTexture(GL.GL_TEXTURE0)
             GL.glBindTexture(GL.GL_TEXTURE_2D, self._tex)
             for i, (tex, target, _) in enumerate(self._lut_ids, start=1):
