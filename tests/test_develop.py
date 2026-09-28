@@ -171,3 +171,22 @@ def test_real_raw_with_camera_neutral():
     assert raw.rgb.dtype == np.uint16 and raw.rgb.shape[1] > raw.rgb.shape[0]
     out = pl.render(raw.rgb[::16, ::16], pl.render_params(prof, raw.as_shot_neutral))
     assert 0.0 <= out.min() and out.max() <= 1.0 and out.mean() > 0.005
+
+
+def test_dng_baseline_exposure(tmp_path):
+    from conftest import make_dng
+    from foto.develop.baseline import DNG_OFFSET, baseline_exposure, dng_baseline
+
+    path = make_dng(tmp_path / "b.dng")
+    assert dng_baseline(str(path)) is None
+    tagged = make_dng(tmp_path / "t.dng", extra_tags=[(50730, "2i", 1, (135, 100))])
+    assert dng_baseline(str(tagged)) == pytest.approx(1.35)
+    assert baseline_exposure(str(tagged), "Foto", "TestCam") == pytest.approx(1.35 + DNG_OFFSET)
+
+
+@pytest.mark.skipif(not os.path.exists(SAMPLE), reason="needs the sample CR3")
+def test_canon_htp_from_maker_notes():
+    from foto.develop.baseline import BASELINES, HTP_EXTRA, baseline_exposure, canon_htp
+
+    assert canon_htp(SAMPLE) == 2  # the R5 II samples were shot with HTP "Enhanced"
+    assert baseline_exposure(SAMPLE, "Canon", "Canon EOS R5m2") == pytest.approx(BASELINES["canoneosr5m2"] + HTP_EXTRA)

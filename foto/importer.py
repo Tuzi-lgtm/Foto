@@ -197,9 +197,8 @@ def _boxes(buf: bytes, start: int, end: int) -> Iterator[tuple[bytes, int, int]]
         pos += size
 
 
-def _cr3_tags(path: str) -> dict:
-    """exifread can't parse CR3 (ISO BMFF). Canon stores plain TIFF blocks in moov/uuid:
-    CMT1 is IFD0 (Make, Model, ...) and CMT2 the Exif IFD, so parse those directly."""
+def cr3_blocks(path: str) -> dict[bytes, bytes]:
+    """Canon's TIFF blocks inside a CR3 (ISO BMFF, moov/uuid): CMT1 = IFD0, CMT2 = Exif IFD, CMT3 = maker notes."""
     with open(path, "rb") as fh:
         while header := fh.read(8):
             size, kind = struct.unpack(">I4s", header)
@@ -211,15 +210,27 @@ def _cr3_tags(path: str) -> dict:
             fh.seek(size - 8, os.SEEK_CUR)
         else:
             return {}
-    tags: dict = {}
+    blocks = {}
     for kind, start, end in _boxes(moov, 0, len(moov)):
-        if kind != b"uuid" or moov[start : start + 16] != _CANON_UUID:
-            continue
-        for sub, s, e in _boxes(moov, start + 16, end):
-            if sub in (b"CMT1", b"CMT2"):
-                found = exifread.process_file(io.BytesIO(moov[s:e]), details=False, extract_thumbnail=False)
-                for key, value in found.items():  # each block reads as a lone IFD0 ("Image ...")
-                    tags[key.replace("Image ", "EXIF ", 1) if sub == b"CMT2" else key] = value
+        if kind == b"uuid" and moov[start : start + 16] == _CANON_UUID:
+            for sub, s, e in _boxes(moov, start + 16, end):
+                if sub.startswith(b"CMT"):
+                    blocks[sub] = moov[s:e]
+    return blocks
+
+
+def cr3_block(path: str, name: bytes) -> bytes | None:
+    return cr3_blocks(path).get(name)
+
+
+def _cr3_tags(path: str) -> dict:
+    """exifread can't parse CR3, so read Canon's CMT1 (IFD0) and CMT2 (Exif) blocks directly."""
+    tags: dict = {}
+    for sub, block in cr3_blocks(path).items():
+        if sub in (b"CMT1", b"CMT2"):
+            found = exifread.process_file(io.BytesIO(block), details=False, extract_thumbnail=False)
+            for key, value in found.items():  # each block reads as a lone IFD0 ("Image ...")
+                tags[key.replace("Image ", "EXIF ", 1) if sub == b"CMT2" else key] = value
     return tags
 
 

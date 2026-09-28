@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from foto.catalog import ImageRecord
 from foto.develop import pipeline as pl
+from foto.develop.baseline import baseline_exposure
 from foto.develop.dcp import Profile, cached_profile, installed_profiles
 from foto.formats import is_raw
 
@@ -35,7 +36,7 @@ def render_params_for(rec: ImageRecord, raw: pl.LinearRaw, settings: dict | None
     settings = settings or {}
     profile = resolve_profile(rec, settings.get("profile", DEFAULT_PROFILE))
     return pl.render_params(profile, raw.as_shot_neutral, exposure=float(settings.get("exposure", 0.0)),
-                            camera_matrix=raw.camera_matrix)
+                            baseline=raw.baseline, camera_matrix=raw.camera_matrix)
 
 
 def profile_label(rec: ImageRecord, settings: dict | None = None) -> str:
@@ -56,6 +57,7 @@ class _Decode(QRunnable):
     def run(self) -> None:
         try:
             raw = pl.decode_linear(self.rec.path, half_size=self.level == HALF)
+            raw.baseline = baseline_exposure(self.rec.path, self.rec.make, self.rec.model)
             self.signals.done.emit(self.rec.id, self.level, raw)
         except Exception as exc:
             self.signals.failed.emit(self.rec.id, self.level, str(exc))

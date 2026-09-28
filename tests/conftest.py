@@ -51,7 +51,7 @@ def catalog(tmp_path):
     cat.close()
 
 
-def make_dng(path, width=1800, height=1200, orientation=6, preview=True):
+def make_dng(path, width=1800, height=1200, orientation=6, preview=True, extra_tags=()):
     """Tiny synthetic DNG: RGGB CFA gradient, optional 8-bit RGB preview in IFD0."""
     import numpy as np
     tifffile = pytest.importorskip("tifffile")
@@ -70,7 +70,7 @@ def make_dng(path, width=1800, height=1200, orientation=6, preview=True):
         (50706, "B", 4, (1, 4, 0, 0)), (50707, "B", 4, (1, 1, 0, 0)), (50708, "s", 0, "Foto TestCam"),
         (271, "s", 0, "Foto"), (272, "s", 0, "TestCam"), (274, "H", 1, orientation),
         (50721, "2i", 9, (*one, 0, 1, 0, 1, 0, 1, *one, 0, 1, 0, 1, 0, 1, *one)),
-        (50778, "H", 1, 21), (50728, "2I", 3, (1, 1, 1, 1, 1, 1)),
+        (50778, "H", 1, 21), (50728, "2I", 3, (1, 1, 1, 1, 1, 1)), *extra_tags,
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with tifffile.TiffWriter(path) as tif:

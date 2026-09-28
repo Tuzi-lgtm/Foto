@@ -30,6 +30,7 @@ class LinearRaw:
     rgb: np.ndarray  # float32 (H, W, 3) or uint16 (H, W, 3) = value * 65535
     as_shot_neutral: np.ndarray  # camera RGB of the as-shot white, max 1
     camera_matrix: np.ndarray | None = None  # LibRaw's XYZ->camera (fallback when no profile)
+    baseline: float = 0.0  # camera baseline exposure, EV (see develop/baseline.py)
 
 
 def decode_linear(path: str, half_size: bool = True) -> LinearRaw:
