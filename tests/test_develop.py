@@ -190,3 +190,14 @@ def test_canon_htp_from_maker_notes():
 
     assert canon_htp(SAMPLE) == 2  # the R5 II samples were shot with HTP "Enhanced"
     assert baseline_exposure(SAMPLE, "Canon", "Canon EOS R5m2") == pytest.approx(BASELINES["canoneosr5m2"] + HTP_EXTRA)
+
+
+def test_encoded_look_table_uses_linear_hue_and_saturation():
+    """sRGB-encoded tables encode only the value axis (DNG RefBaselineHueSatMap).
+
+    Encoding the whole colour first made clipped yellows look nearly neutral and picked up
+    the table's near-neutral highlight entries, turning lamps and faces blue."""
+    t = identity_look(h=6, s=5, v=3)
+    t[:, :, 1, 0] = 180.0  # low-saturation entries: flip hue
+    x = np.array([[1.0, 1.0, 0.5]])  # linear s = 0.5 -> sat index 2, well past the flipped entries
+    np.testing.assert_allclose(pl.apply_hue_sat(x, HueSatTable(6, 5, 3, t, srgb_encoded=True)), x, atol=1e-5)

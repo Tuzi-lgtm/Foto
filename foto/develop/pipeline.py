@@ -168,11 +168,13 @@ def hsv_to_rgb(h, s, v):
 
 
 def apply_hue_sat(rgb, table: HueSatTable):
-    """DNG hue/sat map (hue wraps; sat and val clamp), trilinear."""
-    x = np.clip(rgb, 0.0, None)
+    """DNG hue/sat map (RefBaselineHueSatMap): hue wraps, sat and val clamp, trilinear.
+
+    Hue and saturation always come from the linear colour; an sRGB-encoded table only
+    encodes the value (brightness) axis, both for the lookup and the value scale."""
+    h, s, v = rgb_to_hsv(np.clip(rgb, 0.0, None))
     if table.srgb_encoded:
-        x = srgb_encode(np.clip(x, 0.0, 1.0))
-    h, s, v = rgb_to_hsv(x)
+        v = srgb_encode(np.clip(v, 0.0, 1.0))
     hs = h * (table.hue_divs / 6.0)
     ss = s * (table.sat_divs - 1)
     h0 = np.floor(hs).astype(int) % table.hue_divs
@@ -199,11 +201,10 @@ def apply_hue_sat(rgb, table: HueSatTable):
     e = lerp_hs(v0) * (1 - vf)[..., None] + lerp_hs(v1) * vf[..., None]
     h = h + e[..., 0] * (6.0 / 360.0)
     s = np.minimum(s * e[..., 1], 1.0)
-    v = v * e[..., 2]
+    v = np.clip(v * e[..., 2], 0.0, 1.0)
     if table.srgb_encoded:
-        v = np.minimum(v, 1.0)
-    out = hsv_to_rgb(h, s, v)
-    return srgb_decode(out) if table.srgb_encoded else out
+        v = srgb_decode(v)
+    return hsv_to_rgb(h, s, v)
 
 
 def apply_rgb_tone(rgb, lut: np.ndarray):
@@ -221,8 +222,7 @@ def render(raw_rgb: np.ndarray, p: RenderParams) -> np.ndarray:
     """Linear camera RGB (float 0..1 or uint16) -> display-referred linear sRGB in [0, 1]."""
     x = raw_rgb.astype(np.float32) / (65535.0 if raw_rgb.dtype == np.uint16 else 1.0)
     x = np.minimum(x, p.camera_white.astype(np.float32))
-    x = x @ p.camera_to_prophoto.T.astype(np.float32)
-    x = np.maximum(x, 0.0)
+    x = np.clip(x @ p.camera_to_prophoto.T.astype(np.float32), 0.0, 1.0)
     if p.hue_sat_map is not None:
         x = apply_hue_sat(x, p.hue_sat_map)
     x = np.minimum(x / p.white, 1.0)

@@ -65,9 +65,9 @@ vec3 dev_hsvToRgb(vec3 hsv) {
 vec3 dev_entry(sampler3D table, int h, int s, int v) { return texelFetch(table, ivec3(s, h, v), 0).rgb; }
 
 vec3 dev_hueSat(vec3 c, sampler3D table, ivec3 divs, bool srgb) {
-    c = max(c, 0.0);
-    if (srgb) c = dev_encode3(clamp(c, 0.0, 1.0));
-    vec3 hsv = dev_rgbToHsv(c);
+    // Hue/sat from the linear colour; an sRGB-encoded table encodes only the value axis.
+    vec3 hsv = dev_rgbToHsv(max(c, 0.0));
+    if (srgb) hsv.z = dev_encode(clamp(hsv.z, 0.0, 1.0));
     float hs = hsv.x * float(divs.x) / 6.0;
     float ss = hsv.y * float(divs.y - 1);
     int h0 = int(floor(hs)) % divs.x, h1 = (h0 + 1) % divs.x;
@@ -89,10 +89,9 @@ vec3 dev_hueSat(vec3 c, sampler3D table, ivec3 divs, bool srgb) {
     vec3 e = mix(a0, a1, vf);
     hsv.x += e.x * (6.0 / 360.0);
     hsv.y = min(hsv.y * e.y, 1.0);
-    hsv.z = hsv.z * e.z;
-    if (srgb) hsv.z = min(hsv.z, 1.0);
-    vec3 rgb = dev_hsvToRgb(hsv);
-    return srgb ? dev_decode3(rgb) : rgb;
+    hsv.z = clamp(hsv.z * e.z, 0.0, 1.0);
+    if (srgb) hsv.z = dev_decode(hsv.z);
+    return dev_hsvToRgb(hsv);
 }
 
 float dev_tone(float x) {
@@ -111,7 +110,7 @@ vec3 dev_rgbTone(vec3 c) {
 
 vec3 developMain(vec3 cam) {
     vec3 x = min(cam, dev_cameraWhite);
-    x = max(dev_cameraToProPhoto * x, 0.0);
+    x = clamp(dev_cameraToProPhoto * x, 0.0, 1.0);
     if (dev_hsmDivs.x > 0) x = dev_hueSat(x, dev_hsm, dev_hsmDivs, dev_hsmSRGB);
     x = min(x * dev_exposureScale, 1.0);
     if (dev_lookDivs.x > 0) x = dev_hueSat(x, dev_look, dev_lookDivs, dev_lookSRGB);
